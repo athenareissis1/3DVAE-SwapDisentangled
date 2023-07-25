@@ -26,16 +26,31 @@ def prepare_sub_folder(output_directory):
     return checkpoint_directory
 
 
-def load_template(mesh_path):
+def load_template(mesh_path, attribute_to_remove=None):
     mesh = trimesh.load_mesh(mesh_path, 'ply', process=False)
     feat_and_cont = extract_feature_and_contour_from_colour(mesh)
+
+    mask_save = np.ones(mesh.vertices.shape[0], dtype=bool)
+    if attribute_to_remove != 'none':
+        a2r = attribute_to_remove
+        feat_and_cont[a2r]['feature'] += feat_and_cont[a2r]['contour']
+        feat_and_cont[a2r]['feature'].sort()
+        mesh_verts, mesh_faces, mask_save = remove_mesh_vertices(
+            mesh.vertices, mesh.faces, feat_and_cont[a2r]['feature']
+        )
+        mesh = trimesh.Trimesh(
+            mesh_verts, mesh_faces,
+            vertex_colors=mesh.visual.vertex_colors[mask_save],
+            process=False)
+        feat_and_cont = extract_feature_and_contour_from_colour(mesh)
+
     mesh_verts = torch.tensor(mesh.vertices, dtype=torch.float,
                               requires_grad=False)
     face = torch.from_numpy(mesh.faces).t().to(torch.long).contiguous()
     mesh_colors = torch.tensor(mesh.visual.vertex_colors,
                                dtype=torch.float, requires_grad=False)
     data = Data(pos=mesh_verts, face=face, colors=mesh_colors,
-                feat_and_cont=feat_and_cont)
+                feat_and_cont=feat_and_cont, mask_verts=mask_save)
     data = torch_geometric.transforms.FaceToEdge(False)(data)
     data.laplacian = torch.sparse_coo_tensor(
         *get_laplacian(data.edge_index, normalization='rw'))
@@ -159,3 +174,30 @@ def get_model_list(dirname, key):
     last_model_name = gen_models[-1]
     return last_model_name
 
+
+
+def remove_mesh_vertices(v_original, f_original, v_idxs_to_remove):
+    keep_v_mask = np.ones(v_original.shape[0], dtype=bool)
+    keep_v_mask[v_idxs_to_remove] = 0
+
+    # remove faces containing a vertex that needs to be removed
+    remove_f_idxs = []
+    for v_idx in v_idxs_to_remove:
+        indices = np.argwhere(f_original == v_idx)[:, 0]
+        remove_f_idxs.extend(indices.tolist())
+    remove_f_idxs = sorted(list(dict.fromkeys(remove_f_idxs)))
+    keep_f_mask = np.ones(f_original.shape[0], dtype=bool)
+    keep_f_mask[remove_f_idxs] = 0
+    updated_faces = f_original[keep_f_mask, :]
+
+    # remove vertices
+    new_vertices = v_original[keep_v_mask]
+
+    # update indices of faces with new vertex indexing
+    val_old = np.argwhere(keep_v_mask == 1)[:, 0]
+    val_new = np.arange(0, np.sum(keep_v_mask))
+    arr = np.empty(updated_faces.max() + 1, dtype=val_new.dtype)
+    arr[val_old] = val_new
+    new_faces = arr[updated_faces]
+
+    return new_vertices, new_faces, keep_v_mask

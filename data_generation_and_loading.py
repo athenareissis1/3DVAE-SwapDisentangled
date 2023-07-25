@@ -229,11 +229,14 @@ class MeshDataset(Dataset):
         return train_list, test_list, val_list
 
     def load_mesh(self, filename):
-        mesh_path = os.path.join(self._root, filename + '.ply')
-        mesh = trimesh.load_mesh(mesh_path, 'ply', process=False)
-        mesh_verts = torch.tensor(mesh.vertices, dtype=torch.float,
+        mesh_path = os.path.join(self._root, filename)
+        mesh = trimesh.load_mesh(mesh_path, process=False)
+
+        mesh_vertices = mesh.vertices[self._template.mask_verts]
+        mesh_verts = torch.tensor(mesh_vertices, dtype=torch.float,
                                   requires_grad=False)
         return mesh_verts
+
 
     def compute_mean_and_std(self):
         normalization_dict_path = os.path.join(
@@ -366,16 +369,15 @@ class MeshInMemoryDataset(InMemoryDataset):
                 json.dump(data, fp)
         return train_list, test_list, val_list
 
-    def load_mesh(self, filename, show=False):
-        mesh_path = os.path.join(self._root, filename + '.ply')
-        mesh = trimesh.load_mesh(mesh_path, 'ply', process=False)
-        mesh_verts = torch.tensor(mesh.vertices, dtype=torch.float,
+    def load_mesh(self, filename):
+        mesh_path = os.path.join(self._root, filename)
+        mesh = trimesh.load_mesh(mesh_path, process=False)
+
+        mesh_vertices = mesh.vertices[self._template.mask_verts]
+        mesh_verts = torch.tensor(mesh_vertices, dtype=torch.float,
                                   requires_grad=False)
-        if show:
-            tm = trimesh.Trimesh(vertices=mesh.vertices,
-                                 faces=self._template.face.t().cpu().numpy())
-            tm.show()
         return mesh_verts
+
 
     def compute_mean_and_std(self):
         normalization_dict_path = os.path.join(

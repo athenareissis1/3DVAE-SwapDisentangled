@@ -39,7 +39,7 @@ class ModelManager(torch.nn.Module):
         self.to_mm_const = configurations['data']['to_mm_constant']
         self.device = device
         self.template = utils.load_template(
-            configurations['data']['template_path'])
+            configurations['data']['template_path'], configurations['data']['attibute_to_remove'])
 
         low_res_templates, down_transforms, up_transforms = \
             self._precompute_transformations()
@@ -70,6 +70,7 @@ class ModelManager(torch.nn.Module):
             self._optimization_params['laplacian_weight'])
         self._w_dip_loss = float(self._optimization_params['dip_weight'])
         self._w_factor_loss = float(self._optimization_params['factor_weight'])
+        self._w_age_loss = float(self._optimization_params['age_weight'])
 
         self._rend_device = rendering_device if rendering_device else device
         self.default_shader = HardGouraudShader(
@@ -100,11 +101,12 @@ class ModelManager(torch.nn.Module):
                 self._factor_discriminator.parameters(),
                 lr=float(self._optimization_params['lr']), betas=(0.5, 0.9),
                 weight_decay=self._optimization_params['weight_decay'])
+            
 
     @property
     def loss_keys(self):
         return ['reconstruction', 'kl', 'dip', 'factor',
-                'latent_consistency', 'laplacian', 'tot']
+                'latent_consistency', 'laplacian', 'age', 'tot']
 
     @property
     def latent_regions(self):
@@ -180,7 +182,7 @@ class ModelManager(torch.nn.Module):
 
     def _compute_latent_regions(self):
         region_names = list(self.template.feat_and_cont.keys())
-        latent_size = self._model_params['latent_size']
+        latent_size = self._model_params['latent_size'] - 1
         assert latent_size % len(region_names) == 0
         region_size = latent_size // len(region_names)
         return {k: [i * region_size, (i + 1) * region_size]
@@ -217,19 +219,21 @@ class ModelManager(torch.nn.Module):
         self._reset_losses()
         it = 0
         for it, data in enumerate(data_loader):
+            import pdb; pdb.set_trace()
             if train:
-                losses = iteration_function(data, device, train=True)
+                losses = iteration_function(data, age, device, train=True)
             else:
                 with torch.no_grad():
-                    losses = iteration_function(data, device, train=False)
+                    losses = iteration_function(data, age, device, train=False)
             self._add_losses(losses)
         self._divide_losses(it + 1)
 
-    def _do_iteration(self, data, device='cpu', train=True):
+    def _do_iteration(self, data, age, device='cpu', train=True):
         if train:
             self._optimizer.zero_grad()
 
         data = data.to(device)
+
         reconstructed, z, mu, logvar = self.forward(data)
         loss_recon = self.compute_mse_loss(reconstructed, data.x)
         loss_laplacian = self._compute_laplacian_regularizer(reconstructed)
@@ -244,16 +248,24 @@ class ModelManager(torch.nn.Module):
         else:
             loss_dip = torch.tensor(0, device=device)
 
+        if self._w_age_loss > 0:
+            loss_age = self._compute_age_loss(z, age)
+        else:
+            loss_age = torch.tensor(0, device=device)
+            z = z[:, :-1]
+
         if self._swap_features:
             loss_z_cons = self._compute_latent_consistency(z, data.swapped)
         else:
             loss_z_cons = torch.tensor(0, device=device)
 
+
         loss_tot = loss_recon + \
             self._w_kl_loss * loss_kl + \
             self._w_dip_loss * loss_dip + \
             self._w_latent_cons_loss * loss_z_cons + \
-            self._w_laplacian_loss * loss_laplacian
+            self._w_laplacian_loss * loss_laplacian + \
+            self._w_age_loss * loss_age
 
         if train:
             loss_tot.backward()
@@ -265,9 +277,10 @@ class ModelManager(torch.nn.Module):
                 'factor': 0,
                 'latent_consistency': loss_z_cons.item(),
                 'laplacian': loss_laplacian.item(),
+                'age': loss_age.item(),
                 'tot': loss_tot.item()}
 
-    def _do_factor_vae_iteration(self, data, device='cpu', train=True):
+    def _do_factor_vae_iteration(self, data, age, device='cpu', train=True):
         # Factor-vae split data into two batches.
         data = data.to(device)
         batch_size = data.x.size(dim=0)
@@ -390,6 +403,19 @@ class ModelManager(torch.nn.Module):
         return (1 / (bs ** 3 - bs ** 2)) * \
                (torch.sum(torch.max(zero, lr - dr + eta2)) +
                 torch.sum(torch.max(zero, lg - dg + eta1)))
+    
+    
+
+    # to be changed !!!!!!
+    def _compute_age_loss(self, z, age):
+        # calcualte age loss using only the main diagonal from mini-batch (can look in test.py for finding meshes on diagnoal)
+        # input in the age of that spectific subject and that specific subjects latent 
+        # take z[:,-1] or mu[:,-1]
+        # it can could be MSE or even just the absolute difference 
+        error = sum((age - z)^2)
+
+        return error
+
 
     @staticmethod
     def _permute_latent_dims(latent_sample):

@@ -1,0 +1,61 @@
+data:
+  template_path: precomputed/from_coma.ply                                 # vertices should be coloured (vertex semantic segmentation)
+  attibute_to_remove: '[ 18  78 129 255]'                                         # attribute code related to the feature you want to remove. Delete precomputed files if changed (can keep data_split & from_coma) & rename processed in data folder
+  precomputed_path: precomputed
+  dataset_type: faces
+  dataset_path: /raid/compass/Simone/data/LYHM_FLAME_registrations_aligned
+  dataset_metadata_path: LYHM_metadata.xlsx
+  normalize_data: True
+  to_mm_constant: 6836.24                                                       # if already in mm set to 1, otherwise set proper multiplicative constant
+  std_pca_latent: 3                                                             # for data generation, 1 to sample from correct distribution, > 1 exaggerate face shapes
+  number_of_meshes: 10000                                                       # for data generation, > 0 if you want to generate data
+  number_of_workers: 8
+  swap_features: True                                                           # if True, the resulting batch size will be batch_size^2
+
+optimization:
+  epochs: 600
+  batch_size: 4                                                                 # if swap_features=True, the resulting batch size will be batch_size^2
+  lr: 1e-4
+  weight_decay: 0
+
+  laplacian_weight: 0.4   
+  kl_weight: 1e-4                                                               # if 0, AE or RAE architecture is used
+
+  age_weight: 0.5                                                    
+
+  gaussian_weight: 0                                                            # alternative to KL divergence
+  gaussian_mean_weight: 0
+
+
+  latent_consistency_weight: 6                                                # if 0, no latent consistency loss is used
+  latent_consistency_eta1: 0.5
+  latent_consistency_eta2: 0.5
+
+  rae_weight: 0                                                                 # if 0, no Regularized AE (RAE). If > 0 kl, dip, and factor weights must be 0
+  rae_embedding: 1e-4
+  rae_grad_penalty: 0.5e-7                                                      # If 0, L2 normalization is used and must set rae_gen_weight_decay. Default for GP: 0.5e-7
+  rae_gen_weight_decay: 1e-7                                                    # Ignored if rae_grad_penalty > 0
+  rae_n_gaussians: 10
+
+  dip_weight: 0                                                                 # if 0, no dip loss is used
+  dip_type: i
+  dip_diag_lambda: 0.05
+  dip_offdiag_lambda: 0.1
+
+  factor_weight: 0                                                              # if 0, no factor VAE
+
+model:
+  sampling:
+    type: basic                                                                 # {basic, r_weighted}. Delete precomputed file if changed
+    sampling_factors: [4, 2, 2, 2]
+  spirals:
+    length: [9, 9, 9, 9]                                                        # length of spiral for each convolution. Delete precomputed file if changed.
+    dilation: [1, 1, 1, 1]                                                      # spiral dilation for each convolution. Delete precomputed file if changed.
+  in_channels: 3                                                                # number of input vertex features. Most likely 3 (x, y, z)
+  out_channels: [32, 32, 32, 64]                                                # channels of intermediate layers
+  latent_size: 56                                                               # size of the latent vector
+  pre_z_sigmoid: False
+
+logging_frequency:
+  tb_renderings: 50
+  save_weights: 200

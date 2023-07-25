@@ -45,33 +45,33 @@ class Tester:
             1255, 9881, 32055, 45778, 5355, 27515, 18482, 33691]
 
     def __call__(self):
-        self.set_renderings_size(512)
+        self.set_renderings_size(252)
         self.set_rendering_background_color([1, 1, 1])
 
         # Qualitative evaluations
-        if self._config['data']['swap_features']:
-            self.latent_swapping(next(iter(self._test_loader)).x)
+        # if self._config['data']['swap_features']:
+        #     self.latent_swapping(next(iter(self._test_loader)).x)
         self.per_variable_range_experiments(use_z_stats=False)
         self.random_generation_and_rendering(n_samples=16)
-        self.random_generation_and_save(n_samples=16)
-        self.interpolate()
-        if self._config['data']['dataset_type'] == 'faces':
-            self.direct_manipulation()
+        # self.random_generation_and_save(n_samples=16)
+        # self.interpolate()
+        # if self._config['data']['dataset_type'] == 'faces':
+        #     self.direct_manipulation()
 
         # Quantitative evaluation
-        self.evaluate_gen(self._test_loader, n_sampled_points=2048)
-        recon_errors = self.reconstruction_errors(self._test_loader)
-        train_set_diversity = self.compute_diversity_train_set()
-        diversity = self.compute_diversity()
-        specificity = self.compute_specificity()
-        metrics = {'recon_errors': recon_errors,
-                   'train_set_diversity': train_set_diversity,
-                   'diversity': diversity,
-                   'specificity': specificity}
+        # self.evaluate_gen(self._test_loader, n_sampled_points=2048)
+        # recon_errors = self.reconstruction_errors(self._test_loader)
+        # train_set_diversity = self.compute_diversity_train_set()
+        # diversity = self.compute_diversity()
+        # specificity = self.compute_specificity()
+        # metrics = {'recon_errors': recon_errors,
+        #            'train_set_diversity': train_set_diversity,
+        #            'diversity': diversity,
+        #            'specificity': specificity}
 
-        outfile_path = os.path.join(self._out_dir, 'eval_metrics.json')
-        with open(outfile_path, 'w') as outfile:
-            json.dump(metrics, outfile)
+        # outfile_path = os.path.join(self._out_dir, 'eval_metrics.json')
+        # with open(outfile_path, 'w') as outfile:
+        #     json.dump(metrics, outfile)
 
     def _unnormalize_verts(self, verts, dev=None):
         d = self._device if dev is None else dev
@@ -778,15 +778,15 @@ if __name__ == '__main__':
     tester = Tester(manager, normalization_dict, train_loader, test_loader,
                     output_directory, configurations)
 
-    tester()
+    # tester()
     # tester.direct_manipulation()
     # tester.fit_coma_data_different_noises()
-    # tester.set_renderings_size(512)
-    # tester.set_rendering_background_color()
+    tester.set_renderings_size(256)
+    tester.set_rendering_background_color()
     # tester.interpolate()
     # tester.latent_swapping(next(iter(test_loader)).x)
-    # tester.per_variable_range_experiments()
-    # tester.random_generation_and_rendering(n_samples=16)
+    tester.per_variable_range_experiments()
+    tester.random_generation_and_rendering(n_samples=16)
     # tester.random_generation_and_save(n_samples=16)
     # print(tester.reconstruction_errors(test_loader))
     # print(tester.compute_specificity(train_loader, 100))
