@@ -6,6 +6,7 @@ import trimesh
 import torch
 
 import numpy as np
+import pandas as pd
 
 from abc import abstractmethod
 from torch.utils.data.dataloader import default_collate
@@ -90,19 +91,25 @@ class BodyGenerator(DataGenerator):
 def get_data_loaders(config, template=None):
     data_config = config['data']
     batch_size = config['optimization']['batch_size']
+    if config['data']['age_disentanglement'] == True:
+        age_metadata_path = config['data']['dataset_metadata_path']
+    else: 
+        age_metadata_path = None
 
     train_set = MeshInMemoryDataset(
-        data_config['dataset_path'], dataset_type='train',
+        data_config['dataset_path'], age_metadata_path, dataset_type='train',
         normalize=data_config['normalize_data'], template=template)
     validation_set = MeshInMemoryDataset(
-        data_config['dataset_path'], dataset_type='val',
+        data_config['dataset_path'], age_metadata_path, dataset_type='val',
         normalize=data_config['normalize_data'], template=template)
     test_set = MeshInMemoryDataset(
-        data_config['dataset_path'], dataset_type='test',
+        data_config['dataset_path'], age_metadata_path, dataset_type='test',
         normalize=data_config['normalize_data'], template=template)
     normalization_dict = train_set.normalization_dict
 
+
     swapper = SwapFeatures(template) if data_config['swap_features'] else None
+
 
     train_loader = MeshLoader(train_set, batch_size, shuffle=True,
                               drop_last=True, feature_swapper=swapper,
@@ -113,6 +120,7 @@ def get_data_loaders(config, template=None):
     test_loader = MeshLoader(test_set, batch_size, shuffle=False,
                              drop_last=True, feature_swapper=swapper,
                              num_workers=data_config['number_of_workers'])
+    
     return train_loader, validation_loader, test_loader, normalization_dict
 
 
@@ -122,6 +130,7 @@ class MeshLoader(torch.utils.data.DataLoader):
         collater = MeshCollater(feature_swapper)
         super(MeshLoader, self).__init__(dataset, batch_size, shuffle,
                                          collate_fn=collater, **kwargs)
+
 
 
 class MeshCollater:
@@ -283,7 +292,7 @@ class MeshDataset(Dataset):
 
 
 class MeshInMemoryDataset(InMemoryDataset):
-    def __init__(self, root, precomputed_storage_path='precomputed',
+    def __init__(self, root, age_metadata_path, precomputed_storage_path='precomputed',
                  dataset_type='train', normalize=True,
                  transform=None, pre_transform=None, template=None):
         self._root = root
@@ -304,6 +313,11 @@ class MeshInMemoryDataset(InMemoryDataset):
         self._normalization_dict = normalization_dict
         self.mean = normalization_dict['mean']
         self.std = normalization_dict['std']
+
+        if age_metadata_path != None:
+            self.age_metadata = self.normalise_age(age_metadata_path)
+        else:
+            self.age_metadata = None
 
         super(MeshInMemoryDataset, self).__init__(
             root, transform, pre_transform)
@@ -343,6 +357,36 @@ class MeshInMemoryDataset(InMemoryDataset):
                 if f.endswith('.ply'):
                     files.append(f[:-4])
         return files
+    
+    def normalise_age(self, age_metadata_path):
+
+        train_id = []
+        age_metadata = pd.read_csv(age_metadata_path, usecols=['id', 'age'])
+        storage_path = os.path.join(self._precomputed_storage_path, 'normalise_age.pkl')
+        
+        try:
+            with open(storage_path, 'rb') as file:
+                age_train_mean, age_train_std = \
+                    pickle.load(file)
+        except FileNotFoundError:
+            print("Computing mean and std on the ages of the training data")
+            if not os.path.isdir(self._precomputed_storage_path):
+                os.mkdir(self._precomputed_storage_path)
+            
+            for i in range(len(self._train_names)):
+                train_id.append(np.int64(self._train_names[i].split('_')[0].lstrip('0')))
+            age_train_metadata = age_metadata[age_metadata['id'].isin(train_id)]
+            age_train_mean = np.mean(age_train_metadata['age'])
+            age_train_std = np.std(age_train_metadata['age'])
+
+            with open(storage_path, 'wb') as file:
+                pickle.dump(
+                    [age_train_mean, age_train_std], file)
+                    
+        age_metadata['age'] = (age_metadata['age'] - age_train_mean) / age_train_std
+                
+        return age_metadata
+        
 
     def split_data(self, data_split_list_path):
         try:
@@ -401,21 +445,33 @@ class MeshInMemoryDataset(InMemoryDataset):
             normalization_dict = {'mean': mean, 'std': std}
             torch.save(normalization_dict, normalization_dict_path)
         return normalization_dict
+    
+    def age_data(self, file):
+
+        file_id = np.int64(file.split('_')[0].lstrip('0'))
+        age_metadata = self.age_metadata
+        age = age_metadata.loc[age_metadata['id'] == file_id, 'age'].values[0]
+
+        return age
 
     def _process_set(self, files_list):
         dataset = []
-        for fname in tqdm.tqdm(files_list):
+        for fname in tqdm.tqdm(files_list.copy()):
             mesh_verts = self.load_mesh(fname)
 
             if self._normalize:
                 mesh_verts = (mesh_verts - self.mean) / self.std
 
-            data = Data(x=mesh_verts)
+            mesh_age = self.age_data(fname)
+
+            data = Data(x=mesh_verts, age=mesh_age)
 
             if self.pre_transform is not None:
                 data = self.pre_transform(data)
 
-            dataset.append(data)
+            if not np.isnan(data.age):
+                dataset.append(data)
+        
         return dataset
 
     def process(self):
@@ -425,7 +481,7 @@ class MeshInMemoryDataset(InMemoryDataset):
         torch.save(self.collate(test_data), self.processed_paths[1])
         val_data = self._process_set(self._val_names)
         torch.save(self.collate(val_data), self.processed_paths[2])
-
+        
 
 if __name__ == '__main__':
     BodyGenerator('/home/simo/Desktop').save_mean_mesh()

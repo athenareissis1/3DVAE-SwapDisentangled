@@ -35,6 +35,8 @@ class ModelManager(torch.nn.Module):
         self._optimization_params = configurations['optimization']
         self._precomputed_storage_path = precomputed_storage_path
         self._normalized_data = configurations['data']['normalize_data']
+        self._age_disentanglememt = configurations['data']['age_disentanglement']
+        self._old_experiment = configurations['data']['old_experiment']
 
         self.to_mm_const = configurations['data']['to_mm_constant']
         self.device = device
@@ -51,6 +53,8 @@ class ModelManager(torch.nn.Module):
         self._net = Model(in_channels=self._model_params['in_channels'],
                           out_channels=self._model_params['out_channels'],
                           latent_size=self._model_params['latent_size'],
+                          age_disentanglement=self._age_disentanglememt,
+                          old_experiment=self._old_experiment,
                           spiral_indices=spirals_indices,
                           down_transform=down_transforms,
                           up_transform=up_transforms,
@@ -182,7 +186,10 @@ class ModelManager(torch.nn.Module):
 
     def _compute_latent_regions(self):
         region_names = list(self.template.feat_and_cont.keys())
-        latent_size = self._model_params['latent_size'] - 1
+        if self._age_disentanglememt == True:
+            latent_size = self._model_params['latent_size'] - 1
+        else:
+            latent_size = self._model_params['latent_size']
         assert latent_size % len(region_names) == 0
         region_size = latent_size // len(region_names)
         return {k: [i * region_size, (i + 1) * region_size]
@@ -206,6 +213,7 @@ class ModelManager(torch.nn.Module):
         return self._net.decode(z)
 
     def run_epoch(self, data_loader, device, train=True):
+
         if train:
             self._net.train()
         else:
@@ -219,27 +227,28 @@ class ModelManager(torch.nn.Module):
         self._reset_losses()
         it = 0
         for it, data in enumerate(data_loader):
-            import pdb; pdb.set_trace()
+
             if train:
-                losses = iteration_function(data, age, device, train=True)
+                losses = iteration_function(data, device, train=True)
             else:
                 with torch.no_grad():
-                    losses = iteration_function(data, age, device, train=False)
+                    losses = iteration_function(data, device, train=False)
             self._add_losses(losses)
         self._divide_losses(it + 1)
 
-    def _do_iteration(self, data, age, device='cpu', train=True):
+    def _do_iteration(self, data, device='cpu', train=True):
         if train:
             self._optimizer.zero_grad()
 
         data = data.to(device)
 
         reconstructed, z, mu, logvar = self.forward(data)
+        
         loss_recon = self.compute_mse_loss(reconstructed, data.x)
         loss_laplacian = self._compute_laplacian_regularizer(reconstructed)
 
         if self._w_kl_loss > 0:
-            loss_kl = self._compute_kl_divergence_loss(mu, logvar)
+            loss_kl = self._compute_kl_divergence_loss(mu, logvar, self._age_disentanglememt, self._old_experiment)
         else:
             loss_kl = torch.tensor(0, device=device)
 
@@ -248,17 +257,15 @@ class ModelManager(torch.nn.Module):
         else:
             loss_dip = torch.tensor(0, device=device)
 
-        if self._w_age_loss > 0:
-            loss_age = self._compute_age_loss(z, age)
-        else:
-            loss_age = torch.tensor(0, device=device)
-            z = z[:, :-1]
-
         if self._swap_features:
             loss_z_cons = self._compute_latent_consistency(z, data.swapped)
         else:
             loss_z_cons = torch.tensor(0, device=device)
-
+        
+        if self._age_disentanglememt:
+            loss_age = self._compute_age_loss(mu, data)
+        else:
+            loss_age = torch.tensor(0, device=device)
 
         loss_tot = loss_recon + \
             self._w_kl_loss * loss_kl + \
@@ -294,7 +301,7 @@ class ModelManager(torch.nn.Module):
         loss_recon = self.compute_mse_loss(reconstructed1, data1)
         loss_laplacian = self._compute_laplacian_regularizer(reconstructed1)
 
-        loss_kl = self._compute_kl_divergence_loss(mu1, logvar1)
+        loss_kl = self._compute_kl_divergence_loss(mu1, logvar1, self._age_disentanglememt, self._old_experiment)
 
         disc_z = self._factor_discriminator(z1)
         factor_loss = (disc_z[:, 0] - disc_z[:, 1]).mean()
@@ -347,7 +354,9 @@ class ModelManager(torch.nn.Module):
         return loss.sum() / bs
 
     @staticmethod
-    def _compute_kl_divergence_loss(mu, logvar):
+    def _compute_kl_divergence_loss(mu, logvar, age_disentanglememt, old_experiment):
+        if age_disentanglememt and old_experiment==False:
+            mu = mu[:,:-1]
         kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
         return torch.mean(kl, dim=0)
 
@@ -374,6 +383,8 @@ class ModelManager(torch.nn.Module):
         eta1 = self._optimization_params['latent_consistency_eta1']
         eta2 = self._optimization_params['latent_consistency_eta2']
         latent_region = self._latent_regions[swapped_feature]
+        if self._age_disentanglememt and self._old_experiment==False:
+            z = z[:, :-1]
         z_feature = z[:, latent_region[0]:latent_region[1]].view(bs, bs, -1)
         z_else = torch.cat([z[:, :latent_region[0]],
                             z[:, latent_region[1]:]], dim=1).view(bs, bs, -1)
@@ -405,17 +416,10 @@ class ModelManager(torch.nn.Module):
                 torch.sum(torch.max(zero, lg - dg + eta1)))
     
     
-
-    # to be changed !!!!!!
-    def _compute_age_loss(self, z, age):
-        # calcualte age loss using only the main diagonal from mini-batch (can look in test.py for finding meshes on diagnoal)
-        # input in the age of that spectific subject and that specific subjects latent 
-        # take z[:,-1] or mu[:,-1]
-        # it can could be MSE or even just the absolute difference 
-        error = sum((age - z)^2)
-
-        return error
-
+    def _compute_age_loss(self, mu, data):
+        age = data.age.to(dtype=torch.float32)
+        age_loss = self.compute_mse_loss(mu[self.batch_diagonal_idx, -1], age.squeeze())
+        return age_loss
 
     @staticmethod
     def _permute_latent_dims(latent_sample):
@@ -502,13 +506,15 @@ class ModelManager(torch.nn.Module):
             verts=batched_verts,
             faces=template.face.t().expand(batch_size, -1, -1),
             textures=textures)
+        
+        cam_light_dist = 0.05
 
         rotation, translation = look_at_view_transform(
-            dist=2.5, elev=0, azim=15)
+            dist=cam_light_dist, elev=0, azim=15)
         cameras = FoVPerspectiveCameras(R=rotation, T=translation,
-                                        device=self._rend_device)
+                                        device=self._rend_device, znear=0.05)
 
-        lights = PointLights(location=[[0.0, 0.0, 3.0]],
+        lights = PointLights(location=[[0.0, 0.0, cam_light_dist]],
                              diffuse_color=[[1., 1., 1.]],
                              device=self._rend_device)
 

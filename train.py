@@ -46,6 +46,9 @@ if opts.generate_data:
     data_generator(config['data']['number_of_meshes'],
                    config['data']['std_pca_latent'], opts.generate_data)
 
+if config['data']['age_disentanglement'] == True:
+        config['model']['latent_size'] = config['model']['latent_size'] + 1
+
 manager = ModelManager(
     configurations=config, device=device,
     precomputed_storage_path=config['data']['precomputed_path'])
@@ -78,5 +81,5 @@ for epoch in tqdm.tqdm(range(start_epoch, config['optimization']['epochs'])):
     if (epoch + 1) % config['logging_frequency']['save_weights'] == 0:
         manager.save_weights(checkpoint_dir, epoch)
 
-Tester(manager, normalization_dict, train_loader, test_loader,
+Tester(manager, normalization_dict, train_loader, validation_loader, test_loader,
        output_directory, config)()

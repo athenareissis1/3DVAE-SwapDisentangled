@@ -86,17 +86,20 @@ class SpiralDeblock(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, in_channels, out_channels, latent_size,
+    def __init__(self, in_channels, out_channels, latent_size, age_disentanglement, old_experiment,
                  spiral_indices, down_transform, up_transform, is_vae=False):
         super(Model, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.latent_size = latent_size
+        self.age_disentanglement = age_disentanglement
         self.spiral_indices = spiral_indices
         self.down_transform = down_transform
         self.up_transform = up_transform
         self.num_vert = self.down_transform[-1].size(0)
         self.is_vae = is_vae
+
+        self.old_experiment = old_experiment # remove this when wont be using the old experiments anymore
 
         # encoder
         self.en_layers = nn.ModuleList()
@@ -109,8 +112,14 @@ class Model(nn.Module):
                 self.en_layers.append(
                     SpiralEnblock(out_channels[idx - 1], out_channels[idx],
                                   self.spiral_indices[idx]))
-        self.en_layers.append(
-            nn.Linear(self.num_vert * out_channels[-1], latent_size))
+                
+        if self.age_disentanglement and self.old_experiment==False:
+            self.en_layers.append(
+                nn.Linear(self.num_vert * out_channels[-1], latent_size-1))
+        else:
+            self.en_layers.append(
+                nn.Linear(self.num_vert * out_channels[-1], latent_size))
+
 
         if self.is_vae:  # add another linear layer for logvar
             self.en_layers.append(
@@ -173,17 +182,24 @@ class Model(nn.Module):
     def forward(self, x):
         mu, logvar = self.encode(x)
         if self.is_vae and self.training:
-            z = self._reparameterize(mu, logvar)
+            z = self._reparameterize(mu, logvar, self.age_disentanglement, self.old_experiment)
         else:
             z = mu
         out = self.decode(z)
         return out, z, mu, logvar
 
     @staticmethod
-    def _reparameterize(mu, logvar):
+    def _reparameterize(mu, logvar, age_disentanglement, old_experiment):
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
-        return mu + eps * std
+        if age_disentanglement and old_experiment==False:
+            mu_feat = mu[:,:-1]
+            mu_age = mu[:, -1].view(-1, 1)
+            z = mu_feat + eps * std
+            z = torch.cat((z, mu_age), dim=1)
+        else:
+            z = mu + eps * std
+        return z
 
 
 class FactorVAEDiscriminator(nn.Module):
