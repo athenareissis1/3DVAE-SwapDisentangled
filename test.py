@@ -80,9 +80,9 @@ class Tester:
 
         # age tests
         self.age_latent_changing(self._test_loader)
-        self.age_encoder_check(self._test_loader)
-        self.age_prediction_MLP(self._train_loader, self._test_loader)
-        self.age_prediction_encode_output(self._test_loader)
+        # self.age_encoder_check(self._test_loader)
+        # self.age_prediction_MLP(self._train_loader, self._test_loader)
+        # self.age_prediction_encode_output(self._test_loader)
 
         # self.interpolate_same_age(self._test_loader)
 
@@ -783,12 +783,17 @@ class Tester:
             age_latent_ranges[i] = (age_latent_ranges[i] - age_train_mean) / age_train_std
         grid_nrows = len(age_latent_ranges)
 
+        original_ages = []
+
         for i in tqdm.tqdm(range(z.shape[0])):
             new_z = z[i, ::].clone()
             new_z_original = z[i, ::].clone()
             gen_verts_original = self._manager.generate(new_z_original.to(self._device))
             differences = []
             age_latent_ranges[0] = new_z[-1]
+            original_age = age_latent_ranges[0].item()
+            original_age = (original_age * age_train_std) + age_train_mean
+            original_ages.append(original_age)
 
             for j in range(grid_nrows):
                 new_z[-1] = age_latent_ranges[j]
@@ -805,6 +810,22 @@ class Tester:
                 differences.append(differences_renderings.squeeze())
 
             z_all.extend(differences)
+
+        # create a results file 
+
+        line_to_add = 'age_latent_changing original ages: ' + str(original_ages)
+
+        filename = os.path.join(self._out_dir, 'results.txt')
+
+        if not os.path.exists(filename):
+            with open(filename, 'w') as file:
+                file.write('')  # This will create an empty file. You can also write some content if needed.
+        else:
+            print(f"{filename} already exists.")
+
+        with open(filename, 'a') as file:
+            file.write(line_to_add)
+            file.write('\n' * 2)
 
         stacked_frames = torch.stack(z_all)
         grid = make_grid(stacked_frames, padding=10, pad_value=1, nrow=grid_nrows) 
@@ -1136,8 +1157,8 @@ if __name__ == '__main__':
     # age tests
     if configurations['data']['age_disentanglement'] == True:
         tester.age_latent_changing(test_loader)
-        tester.age_encoder_check(test_loader)
-        tester.age_prediction_MLP(train_loader, test_loader)
-        tester.age_prediction_encode_output(test_loader)
+        # tester.age_encoder_check(test_loader)
+        # tester.age_prediction_MLP(train_loader, test_loader)
+        # tester.age_prediction_encode_output(test_loader)
 
         # tester.interpolate_same_age(test_loader)
