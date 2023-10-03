@@ -1,6 +1,6 @@
 data:
   template_path: precomputed/from_coma.ply                                 # vertices should be coloured (vertex semantic segmentation)
-  attibute_to_remove: '[ 18  78 129 255]'                                         # attribute code related to the feature you want to remove. Delete precomputed files if changed (can keep data_split & from_coma) & rename processed in data folder
+  attibute_to_remove: '[ 18  78 129 255]'                                         # attribute code related to the feature you want to remove. If none then state 'none'. Delete precomputed files if changed (can keep data_split & from_coma) & rename processed in data folder
   precomputed_path: precomputed
   dataset_type: faces
   dataset_path: /raid/compass/Simone/data/LYHM_FLAME_registrations_aligned

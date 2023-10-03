@@ -79,10 +79,12 @@ class Tester:
         # #     json.dump(metrics, outfile)
 
         # age tests
-        self.age_latent_changing(self._test_loader)
+        # self.age_latent_changing(self._test_loader)
         # self.age_encoder_check(self._test_loader)
         # self.age_prediction_MLP(self._train_loader, self._test_loader)
         # self.age_prediction_encode_output(self._test_loader)
+        # self.dataset_age_split()
+        self.random_rendering_template()
 
         # self.interpolate_same_age(self._test_loader)
 
@@ -980,16 +982,17 @@ class Tester:
         It also outputs a graph with the actual and predicted ages 
         
         """
-
+        age_actuals = []
         age_latents = []
         age_preds = []
 
         for batch in tqdm.tqdm(data_loader):
 
             if self._config['data']['swap_features']:
-                    batch = batch.x[self._manager.batch_diagonal_idx, ::]        
+                    x = batch.x[self._manager.batch_diagonal_idx, ::]    
+                    age = batch.age 
 
-            z = self._manager.encode(batch.to(self._device)).detach().cpu()
+            z = self._manager.encode(x.to(self._device)).detach().cpu()
             
             storage_path = os.path.join(self._manager._precomputed_storage_path, 'normalise_age.pkl')
             with open(storage_path, 'rb') as file:
@@ -1009,12 +1012,18 @@ class Tester:
                 age_pred = z_2[i][-1].item()
                 age_pred = (age_pred * age_train_std) + age_train_mean
                 age_preds.append(age_pred)
+                age_actual = age[i].item()
+                age_actual = (age_actual * age_train_std) + age_train_mean
+                age_actuals.append(age_actual)
+                
 
-        average_pred_diff = np.mean(np.abs(np.array(age_latents) - np.array(age_preds)))
+        average_pred_diff_latent_pred = np.mean(np.abs(np.array(age_latents) - np.array(age_preds)))
+        average_pred_diff_actual_pred = np.mean(np.abs(np.array(age_actuals) - np.array(age_preds)))
 
         # print('age_prediction_encode_output - Mean absolute difference after second encoder: ' + str(average_pred_diff))
 
-        line_to_add = 'age_prediction_encode_output - Mean absolute difference after second encoder: ' + str(average_pred_diff)
+        line_to_add = 'age_prediction_encode_output - Mean absolute difference after second encoder between random age latent assigned and predicted: ' + str(average_pred_diff_latent_pred)
+        line_to_add_2 = 'age_prediction_encode_output - Mean absolute difference after second encoder between actual age and predicted: ' + str(average_pred_diff_actual_pred)
     
         # creat results file 
 
@@ -1029,24 +1038,91 @@ class Tester:
         with open(filename, 'a') as file:
             file.write(line_to_add)
             file.write('\n' * 2)
+            file.write(line_to_add_2)
+            file.write('\n' * 2)
 
         plt.clf()
 
         plt.scatter(age_latents, age_preds)
         plt.plot([0, 100], [0, 100], 'r--')
 
-        plt.title('Age encoders prediction')
-        plt.xlabel('Assigned age')
+        plt.title('Encoders prediction after age latent change')
+        plt.xlabel('Random assigned age')
         plt.ylabel('Predicted age')
 
         plt.savefig(os.path.join(self._out_dir, 'age_encoder_prediciton.png'))
 
+        plt.clf()
 
-    def check_proportions():
+        plt.scatter(age_actuals, age_preds)
+        plt.plot([0, 100], [0, 100], 'r--')
 
-        
+        plt.title('Encoders prediction after age latent change')
+        plt.xlabel('Original age')
+        plt.ylabel('Predicted age')
 
-        return "hello"
+        plt.savefig(os.path.join(self._out_dir, 'age_encoder_prediciton_actual_pred.png'))
+
+    def dataset_age_split(self):
+        age_metadata_path = self._config['data']['dataset_metadata_path']
+        precomputed_storage_path = self._config['data']['precomputed_path']
+        age_metadata = pd.read_csv(age_metadata_path, usecols=['age'], header=0)
+        storage_path = os.path.join(precomputed_storage_path, 'age_dataset_split.txt')
+
+        if not os.path.exists(storage_path):
+            with open(storage_path, 'w') as file:
+                file.write('')  # This will create an empty file. You can also write some content if needed.
+
+                # age_dataset_split = []
+
+                for i in range(9):
+                    if i == 0:
+                        lower = 0
+                        upper = 10
+                    else:
+                        lower = (i * 10) + 1
+                        upper = (i + 1) * 10
+
+                    range_data = [x for x in age_metadata['age'] if lower <= x <= upper]
+                    count_data = len(range_data)
+                    percentage_data = (count_data / len(age_metadata)) * 100
+
+                    age_range_info = "Range " + str(lower) + "-" + str(upper) + ": count = " + str(count_data) + ", percentage = " + str(percentage_data) + ", values: " + str(range_data) 
+                    # age_dataset_split.append(age_range_info)
+
+                    with open(storage_path, 'a') as file:
+                        file.write(age_range_info)
+                        file.write('\n' * 2)
+        else:
+            print(f"{storage_path} already exists.")
+
+        bin_edges = list(range(0, 91, 10))
+        bin_labels = ["0-10", "11-20", "21-30", "31-40", "41-50", "51-60", "61-70", "71-80", "81-90"]
+        mid_points = [(bin_edges[i] + bin_edges[i+1]) / 2 for i in range(len(bin_edges)-1)]
+
+
+        # Plot the histogram
+        plt.figure(figsize=(10,6))
+        n, bins, patches = plt.hist(age_metadata, bins=bin_edges, edgecolor="k", alpha=0.7)
+        plt.xticks(mid_points, bin_labels)
+        plt.xlabel("Age Ranges")
+        plt.ylabel("Frequency")
+        plt.title("Age Distribution")
+        # plt.show()
+
+        # Annotate the bars with the frequency count and percentage
+        for i in range(len(n)):
+            plt.text(mid_points[i], n[i] + 5, f"{int(n[i])}\n({(n[i] / len(age_metadata)) * 100:.1f}%)", 
+                    ha='center', va='bottom', color='black', fontsize=9)
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(self._out_dir, 'age_distribution.png'))
+        plt.clf()
+
+    def random_rendering_template(self):
+        template = self._manager.template#.mask_verts
+        rendering = self._manager.render(template).cpu()
+        save_image(rendering, os.path.join(self._out_dir, 'template_render.png'))
 
 
     def interpolate_same_age(self, data_loader):
@@ -1156,9 +1232,11 @@ if __name__ == '__main__':
 
     # age tests
     if configurations['data']['age_disentanglement'] == True:
-        tester.age_latent_changing(test_loader)
+        # tester.age_latent_changing(test_loader)
         # tester.age_encoder_check(test_loader)
         # tester.age_prediction_MLP(train_loader, test_loader)
         # tester.age_prediction_encode_output(test_loader)
+        # tester.dataset_age_split()
+        tester.random_rendering_template()
 
         # tester.interpolate_same_age(test_loader)
