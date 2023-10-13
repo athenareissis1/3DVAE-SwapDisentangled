@@ -84,9 +84,8 @@ class Tester:
         # self.age_prediction_MLP(self._train_loader, self._test_loader)
         # self.age_prediction_encode_output(self._test_loader)
         # self.dataset_age_split()
-        self.random_rendering_template()
-
-        # self.interpolate_same_age(self._test_loader)
+        # self.random_rendering_template()
+        self.change_other_latents(self._test_loader)
 
 
     def _unnormalize_verts(self, verts, dev=None):
@@ -1064,6 +1063,15 @@ class Tester:
         plt.savefig(os.path.join(self._out_dir, 'age_encoder_prediciton_actual_pred.png'))
 
     def dataset_age_split(self):
+
+        """
+        
+        This function calculates how many data subjects there are for each age range group to understand it's distribution. 
+        
+        It saves the results in a .txt tile.  
+        
+        """
+
         age_metadata_path = self._config['data']['dataset_metadata_path']
         precomputed_storage_path = self._config['data']['precomputed_path']
         age_metadata = pd.read_csv(age_metadata_path, usecols=['age'], header=0)
@@ -1119,58 +1127,56 @@ class Tester:
         plt.savefig(os.path.join(self._out_dir, 'age_distribution.png'))
         plt.clf()
 
-    def random_rendering_template(self):
-        template = self._manager.template#.mask_verts
-        rendering = self._manager.render(template).cpu()
-        save_image(rendering, os.path.join(self._out_dir, 'template_render.png'))
+    def change_other_latents(self, data_loader):
 
-
-    def interpolate_same_age(self, data_loader):
         batch = next(iter(data_loader))
 
-        # # Extract the age values from the dataset
-        # ages = [data.age for data in data_loader]
-        # # Check if any age values are the same
-        # if len(set(ages)) < len(ages):
-        #     print("There are duplicate age values in the dataset.")
-        # else:
-        #     print("There are no duplicate age values in the dataset.")
+        if self._config['data']['swap_features']:
+                batch = batch.x[self._manager.batch_diagonal_idx, ::]
 
-        age_mesh_dict = {}
-        batch_idx = 0
+        enc = self._manager.encode(batch.to(self._device)).detach().cpu()
 
-        for data in tqdm.tqdm(data_loader):
-            age = data.age
-            batch = data.x
-            # ages.append(data.age)
-            # generate a age & mesh dictionary
+        rand = random.randint(0, len(batch) - 1)
 
-            if self._config['data']['swap_features']:
-                batch = batch[self._manager.batch_diagonal_idx, ::]  
+        z = enc[rand, ::]     
+        # import pdb; pdb.set_trace()
 
-            for i in range(4):
-                age_mesh_dict[f'batch_{batch_idx}_{i}'] = {'age': age[i], 'mesh': batch[i]}
+        for i in range(55):
 
+            z_min = z.clone()
+            z_max = z.clone()
+            # z_latent_index = i + 1
+            # z_latent_value = z[i] 
 
-            # Check if any age values in the dictionary are the same
-            has_duplicates = False
-            ages = set()
-            for value in age_mesh_dict.values():
-                age = value['age']
-                if age in ages:
-                    has_duplicates = True
-                    break
-                else:
-                    ages.add(age)
+            z_min[i] = -3 
+            z_max[i] = 3
 
-            # Print the result
-            if has_duplicates:
-                print('The dictionary has duplicate age values')
-            else:
-                print('The dictionary does not have duplicate age values')
+            z_all = [z_min, z, z_max]
 
+            gen_all = []
+            differences = []
 
-            batch_idx += 1
+            for j in range(3):
+
+                gen = self._manager.generate(z_all[j].to(self._device))
+
+                if self._normalized_data:
+                    gen = self._unnormalize_verts(gen)
+
+                renderings = self._manager.render(gen).cpu()
+                gen_all.append(renderings.squeeze())
+
+                differences_from_original = self._manager.compute_vertex_errors(gen_verts, gen_verts_original)
+                differences_renderings = self._manager.render(gen_verts, differences_from_original, error_max_scale=5).cpu().detach()
+                differences.append(differences_renderings.squeeze())
+
+            # difference from one to two 
+
+            gen_all.extend(differences)
+
+            stacked_frames = torch.stack(gen_all)
+            grid = make_grid(stacked_frames, padding=10, pad_value=1, nrow=3) 
+            save_image(grid, os.path.join(self._out_dir + '/latent_changes', str(i+1) + '_latent_changed.png'))
 
 
 
@@ -1237,6 +1243,4 @@ if __name__ == '__main__':
         # tester.age_prediction_MLP(train_loader, test_loader)
         # tester.age_prediction_encode_output(test_loader)
         # tester.dataset_age_split()
-        tester.random_rendering_template()
-
-        # tester.interpolate_same_age(test_loader)
+        tester.change_other_latents(test_loader)
