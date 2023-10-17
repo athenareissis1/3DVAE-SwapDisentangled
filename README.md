@@ -1,5 +1,4 @@
-# 3D Shape Variational Autoencoder Latent Disentanglement via Mini-Batch Feature Swapping for Bodies and Faces
-[[arxiv]](https://arxiv.org/pdf/2111.12448.pdf) [[CVF]](https://openaccess.thecvf.com/content/CVPR2022/papers/Foti_3D_Shape_Variational_Autoencoder_Latent_Disentanglement_via_Mini-Batch_Feature_Swapping_CVPR_2022_paper.pdf) 
+# Age Disentangled Variational Autoencoder for Age Progression of Normal Subjects
 
 ## Installation
 
@@ -12,7 +11,7 @@ and run it with:
 ```
 This will create a virtual environment with all the necessary libraries.
 
-Note that it was tested with Python 3.8, CUDA 10.1, and Pytorch 1.7.1. The code 
+Note that it was tested with Python 3.8, CUDA 11.3, and Pytorch 1.12.1. The code 
 should work also with newer versions of  Python, CUDA, and Pytorch. If you wish 
 to try running the code with more recent versions of these libraries, change the 
 CUDA, TORCH, and PYTHON_V variables in install_env.sh
@@ -22,12 +21,25 @@ Then activate the virtual environment :
 source ./id-generator-env/bin/activate
 ```
 
+PyTorch3D needs to have version 0.4.0 or higher. If this is not the case after installing the environment using the install_env.sh file and you are not able to easily update it, run the following commands which can be found on the Pytorch3D instalation guide: https://github.com/facebookresearch/pytorch3d/blob/main/INSTALL.md
+```shell script
+curl -LO https://github.com/NVIDIA/cub/archive/1.10.0.tar.gz
+tar xzf 1.10.0.tar.gz
+export CUB_HOME=$PWD/cub-1.10.0
+
+pip install "git+https://github.com/facebookresearch/pytorch3d.git@stable"
+```
+
 
 ## Datasets
 
-To obtain access to the UHM models and generate the dataset, please follow the 
-instructions on the 
-[github repo of UHM](https://github.com/steliosploumpis/Universal_Head_3DMM).
+Current dataset:
+  Current dataset being used for this code is The Liverpool-York Head Model dataset. 
+
+Previous dataset used: 
+  To obtain access to the UHM models and generate the dataset, please follow the 
+  instructions on the 
+  [github repo of UHM](https://github.com/steliosploumpis/Universal_Head_3DMM).
 
  Data will be automatically generated from the UHM during the first training. 
  In this case the training must be launched with the argument `--generate_data` 
@@ -35,6 +47,7 @@ instructions on the
  
  ## Prepare Your Configuration File
  
+ !! code from Simone's work !!
  We made available a configuration file for each experiment (default.yaml is 
  the configuration file of the proposed method). Make sure 
  the paths in the config file are correct. In particular, you might have to 
@@ -71,21 +84,3 @@ We make available the files storing:
  - the mesh template with the face regions
  - the network weights
 
-
-
-## Video Of Oral Presentation @CVPR2022
-
-[![Watch the video summary of our paper!](https://img.youtube.com/vi/C9d00_Ct4KI/0.jpg)](https://www.youtube.com/watch?v=C9d00_Ct4KI "CVPR2022-oral: 3D VAE Latent Disentanglementvia Mini-Batch Feature Swapping")
-
-
-## Cite This Work
-
-```
-@inproceedings{foti20223d,
-  title={3D Shape Variational Autoencoder Latent Disentanglement via Mini-Batch Feature Swapping for Bodies and Faces},
-  author={Foti, Simone and Koo, Bongjin and Stoyanov, Danail and Clarkson, Matthew J},
-  booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition},
-  pages={18730--18739},
-  year={2022}
-}
-```
