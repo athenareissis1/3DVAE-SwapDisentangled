@@ -146,7 +146,7 @@ class MeshCollater:
                 f"DataLoader found invalid type: {type(data_list[0])}. "
                 f"Expected torch_geometric.data.Data instead")
 
-        keys = [set(data.keys) for data in data_list]
+        keys = [set(data.keys()) for data in data_list]
         keys = list(set.union(*keys))
         batched_data = Data()
         for key in keys:
