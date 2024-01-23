@@ -36,7 +36,11 @@ class ModelManager(torch.nn.Module):
         self._precomputed_storage_path = precomputed_storage_path
         self._normalized_data = configurations['data']['normalize_data']
         self._age_disentanglememt = configurations['data']['age_disentanglement']
+        self._swap_features = configurations['data']['swap_features']
         self._old_experiment = configurations['data']['old_experiment']
+        self._model_version = configurations['data']['model_version']
+        self._extra_layers = configurations['data']['extra_layers']
+        self._detach_features = configurations['data']['detach_features']
 
         self.to_mm_const = configurations['data']['to_mm_constant']
         self.device = device
@@ -48,16 +52,27 @@ class ModelManager(torch.nn.Module):
         meshes_all_resolutions = [self.template] + low_res_templates
         spirals_indices = self._precompute_spirals(meshes_all_resolutions)
 
+        bs = self._optimization_params['batch_size']
+        self._batch_diagonal_idx = [(bs + 1) * i for i in range(bs)]
+
         self._w_kl_loss = float(self._optimization_params['kl_weight'])
 
         self._net = Model(in_channels=self._model_params['in_channels'],
                           out_channels=self._model_params['out_channels'],
                           latent_size=self._model_params['latent_size'],
                           age_disentanglement=self._age_disentanglememt,
+                          swap_features=self._swap_features,
+                          batch_diagonal_idx=self._batch_diagonal_idx,
                           old_experiment=self._old_experiment,
                           spiral_indices=spirals_indices,
                           down_transform=down_transforms,
                           up_transform=up_transforms,
+                          mlp_dropout=self._optimization_params['mlp_dropout'], 
+                          mlp_layer_2=self._optimization_params['mlp_layer_2'],
+                          mlp_layer_3=self._optimization_params['mlp_layer_3'],
+                          model_version=self._model_version,
+                          extra_layers=self._extra_layers,
+                          detach_features=self._detach_features,
                           is_vae=self._w_kl_loss > 0).to(device)
 
         self._optimizer = torch.optim.Adam(
@@ -75,6 +90,7 @@ class ModelManager(torch.nn.Module):
         self._w_dip_loss = float(self._optimization_params['dip_weight'])
         self._w_factor_loss = float(self._optimization_params['factor_weight'])
         self._w_age_loss = float(self._optimization_params['age_weight'])
+        self._w_no_age_loss = float(self._optimization_params['no_age_weight'])
 
         self._rend_device = rendering_device if rendering_device else device
         self.default_shader = HardGouraudShader(
@@ -89,9 +105,6 @@ class ModelManager(torch.nn.Module):
             self._out_grid_size = self._optimization_params['batch_size']
         else:
             self._out_grid_size = 4
-
-        bs = self._optimization_params['batch_size']
-        self._batch_diagonal_idx = [(bs + 1) * i for i in range(bs)]
 
         if self._w_latent_cons_loss > 0:
             assert self._swap_features
@@ -110,7 +123,7 @@ class ModelManager(torch.nn.Module):
     @property
     def loss_keys(self):
         return ['reconstruction', 'kl', 'dip', 'factor',
-                'latent_consistency', 'laplacian', 'age', 'tot']
+                'latent_consistency', 'laplacian', 'age', 'no_age', 'tot']
 
     @property
     def latent_regions(self):
@@ -202,6 +215,11 @@ class ModelManager(torch.nn.Module):
     def encode(self, data):
         self._net.eval()
         return self._net.encode(data)[0]
+    
+    # @torch.no_grad()
+    # def mlp_features(self, mu_features):
+    #     self._net.eval()
+    #     return self._net.mlp_feature(mu_features)
 
     @torch.no_grad()
     def generate(self, z):
@@ -242,13 +260,13 @@ class ModelManager(torch.nn.Module):
 
         data = data.to(device)
 
-        reconstructed, z, mu, logvar = self.forward(data)
+        reconstructed, z, mu, logvar, mlp_output = self.forward(data)
         
         loss_recon = self.compute_mse_loss(reconstructed, data.x)
         loss_laplacian = self._compute_laplacian_regularizer(reconstructed)
 
         if self._w_kl_loss > 0:
-            loss_kl = self._compute_kl_divergence_loss(mu, logvar, self._age_disentanglememt, self._old_experiment)
+            loss_kl = self._compute_kl_divergence_loss(mu, logvar, self._age_disentanglememt, self._old_experiment, self._model_version)
         else:
             loss_kl = torch.tensor(0, device=device)
 
@@ -257,35 +275,85 @@ class ModelManager(torch.nn.Module):
         else:
             loss_dip = torch.tensor(0, device=device)
 
-        if self._swap_features:
-            loss_z_cons = self._compute_latent_consistency(z, data.swapped)
+        if self._w_latent_cons_loss > 0 and self._swap_features:
+            if self._model_version == 1: 
+                # MODEL 1 & MODEL 1.1
+                loss_z_cons = self._compute_latent_consistency(z, data.swapped)
+            else:
+                # MODEL 2 & MODEL 2.1 & MODEL 2.2 & MODEL 2.3
+                loss_z_cons = self._compute_latent_consistency(mu, data.swapped)
         else:
             loss_z_cons = torch.tensor(0, device=device)
         
         if self._age_disentanglememt:
-            loss_age = self._compute_age_loss(mu, data)
+            if self._w_age_loss > 0: 
+                loss_age = self._compute_age_loss(mu, data)
+            else: 
+                loss_age = torch.tensor(0, device=device)
+
+            if self._w_no_age_loss > 0: 
+                loss_no_age = self._compute_no_age_loss(mlp_output, data)
+            else: 
+                loss_no_age = torch.tensor(0, device=device)
         else:
             loss_age = torch.tensor(0, device=device)
+            loss_no_age = torch.tensor(0, device=device)
 
-        loss_tot = loss_recon + \
-            self._w_kl_loss * loss_kl + \
-            self._w_dip_loss * loss_dip + \
-            self._w_latent_cons_loss * loss_z_cons + \
-            self._w_laplacian_loss * loss_laplacian + \
-            self._w_age_loss * loss_age
 
-        if train:
-            loss_tot.backward()
-            self._optimizer.step()
+        if self._extra_layers == False or self._detach_features == True:
+            # MODEL 1 & MODEL 2 & MODEL 2.2
+            loss_tot = loss_recon + \
+                self._w_kl_loss * loss_kl + \
+                self._w_dip_loss * loss_dip + \
+                self._w_latent_cons_loss * loss_z_cons + \
+                self._w_laplacian_loss * loss_laplacian + \
+                self._w_age_loss * loss_age + \
+                self._w_no_age_loss * loss_no_age
 
-        return {'reconstruction': loss_recon.item(),
-                'kl': loss_kl.item(),
-                'dip': loss_dip.item(),
-                'factor': 0,
-                'latent_consistency': loss_z_cons.item(),
-                'laplacian': loss_laplacian.item(),
-                'age': loss_age.item(),
-                'tot': loss_tot.item()}
+            if train:
+
+                loss_tot.backward()
+                self._optimizer.step()
+
+         
+            return {'reconstruction': loss_recon.item(),
+                    'kl': loss_kl.item(),
+                    'dip': loss_dip.item(),
+                    'factor': 0,
+                    'latent_consistency': loss_z_cons.item(),
+                    'laplacian': loss_laplacian.item(),
+                    'age': loss_age.item(),
+                    'no_age': loss_no_age.item(),
+                    'tot': loss_tot.item()}
+
+        else:
+            # MODEL 1.1 & MODEL 2.1 & MODEL 2.3
+            loss_tot = loss_recon + \
+                self._w_kl_loss * loss_kl + \
+                self._w_dip_loss * loss_dip + \
+                self._w_latent_cons_loss * loss_z_cons + \
+                self._w_laplacian_loss * loss_laplacian + \
+                self._w_age_loss * loss_age
+            
+            loss_no_age = self._w_no_age_loss * loss_no_age
+
+            if train:
+                loss_no_age.backward(retain_graph=True)
+
+                self._net.en_layers.zero_grad()
+
+                loss_tot.backward()
+                self._optimizer.step()
+
+            return {'reconstruction': loss_recon.item(),
+                    'kl': loss_kl.item(),
+                    'dip': loss_dip.item(),
+                    'factor': 0,
+                    'latent_consistency': loss_z_cons.item(),
+                    'laplacian': loss_laplacian.item(),
+                    'age': loss_age.item(),
+                    'no_age': loss_no_age.item(),
+                    'tot': loss_tot.item()}
 
     def _do_factor_vae_iteration(self, data, age, device='cpu', train=True):
         # Factor-vae split data into two batches.
@@ -301,7 +369,7 @@ class ModelManager(torch.nn.Module):
         loss_recon = self.compute_mse_loss(reconstructed1, data1)
         loss_laplacian = self._compute_laplacian_regularizer(reconstructed1)
 
-        loss_kl = self._compute_kl_divergence_loss(mu1, logvar1, self._age_disentanglememt, self._old_experiment)
+        loss_kl = self._compute_kl_divergence_loss(mu1, logvar1, self._age_disentanglememt, self._old_experiment, self._model_version)
 
         disc_z = self._factor_discriminator(z1)
         factor_loss = (disc_z[:, 0] - disc_z[:, 1]).mean()
@@ -354,8 +422,8 @@ class ModelManager(torch.nn.Module):
         return loss.sum() / bs
 
     @staticmethod
-    def _compute_kl_divergence_loss(mu, logvar, age_disentanglememt, old_experiment):
-        if age_disentanglememt and old_experiment==False:
+    def _compute_kl_divergence_loss(mu, logvar, age_disentanglememt, old_experiment, model_version):
+        if age_disentanglememt and old_experiment==False and model_version!=2.3:
             mu = mu[:,:-1]
         kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
         return torch.mean(kl, dim=0)
@@ -420,6 +488,11 @@ class ModelManager(torch.nn.Module):
         age = data.age.to(dtype=torch.float32)
         age_loss = self.compute_mse_loss(mu[self.batch_diagonal_idx, -1], age.squeeze())
         return age_loss
+    
+    def _compute_no_age_loss(self, mlp_output, data):
+        age = data.age.to(dtype=torch.float32)
+        no_age_loss = self.compute_mse_loss(mlp_output, age)
+        return no_age_loss
 
     @staticmethod
     def _permute_latent_dims(latent_sample):

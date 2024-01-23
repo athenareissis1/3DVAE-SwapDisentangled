@@ -1,8 +1,7 @@
 # Age Disentangled Variational Autoencoder for Age Progression of Normal Subjects
 
 ## Installation
-
-After cloning the repo open a terminal and go to the project directory. 
+After installing Miniconda and cloning the repo open a terminal and go to the project directory. 
 
 Change the permissions of install_env.sh by running `chmod +x ./install_env.sh` 
 and run it with:
@@ -29,7 +28,7 @@ export CUB_HOME=$PWD/cub-1.10.0
 
 pip install "git+https://github.com/facebookresearch/pytorch3d.git@stable"
 ```
-
+MAKE SURE Pillow==0.8.2
 
 ## Datasets
 

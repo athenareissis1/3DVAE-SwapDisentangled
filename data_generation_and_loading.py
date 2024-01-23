@@ -97,13 +97,13 @@ def get_data_loaders(config, template=None):
         age_metadata_path = None
 
     train_set = MeshInMemoryDataset(
-        data_config['dataset_path'], age_metadata_path, dataset_type='train',
+        data_config, age_metadata_path, dataset_type='train',
         normalize=data_config['normalize_data'], template=template)
     validation_set = MeshInMemoryDataset(
-        data_config['dataset_path'], age_metadata_path, dataset_type='val',
+        data_config, age_metadata_path, dataset_type='val',
         normalize=data_config['normalize_data'], template=template)
     test_set = MeshInMemoryDataset(
-        data_config['dataset_path'], age_metadata_path, dataset_type='test',
+        data_config, age_metadata_path, dataset_type='test',
         normalize=data_config['normalize_data'], template=template)
     normalization_dict = train_set.normalization_dict
 
@@ -208,9 +208,27 @@ class MeshDataset(Dataset):
         files = []
         for dirpath, _, fnames in os.walk(self._root):
             for f in fnames:
-                if f.endswith('.ply'):
+                if f.endswith('.obj'):
                     files.append(f[:-4])
         return files
+    
+    def remove_ages(self, train, test, val):
+
+        age_lower = int(self._config_data['dataset_age_range'].split("-")[0])
+        age_upper = int(self._config_data['dataset_age_range'].split("-")[1])
+
+        age_metadata = pd.read_csv(self.age_metadata_path, usecols=['id', 'age'])
+        age_metadata['id'] = age_metadata['id'].astype(str)
+
+        # Create a lookup dictionary
+        age_lookup = age_metadata.set_index('id')['age'].to_dict()
+   
+        # Process filenames and filter out entries with age not within the range [age_lower, age_upper]
+        train = [filename for filename in train if age_lower <= age_lookup.get(filename.split("_")[0].lstrip('0'), age_upper + 1) <= age_upper]
+        val = [filename for filename in val if age_lower <= age_lookup.get(filename.split("_")[0].lstrip('0'), age_upper + 1) <= age_upper]
+        test = [filename for filename in test if age_lower <= age_lookup.get(filename.split("_")[0].lstrip('0'), age_upper + 1) <= age_upper]
+
+        return train, test, val
 
     def split_data(self, data_split_list_path):
         try:
@@ -219,7 +237,7 @@ class MeshDataset(Dataset):
             train_list = data['train']
             test_list = data['test']
             val_list = data['val']
-        except FileNotFoundError:
+        except FileNotFoundError: 
             all_file_names = self.find_filenames()
             all_file_names.sort()
 
@@ -235,6 +253,9 @@ class MeshDataset(Dataset):
             data = {'train': train_list, 'test': test_list, 'val': val_list}
             with open(data_split_list_path, 'w') as fp:
                 json.dump(data, fp)
+
+        train_list, test_list, val_list = self.remove_ages(train_list, test_list, val_list)
+
         return train_list, test_list, val_list
 
     def load_mesh(self, filename):
@@ -292,10 +313,12 @@ class MeshDataset(Dataset):
 
 
 class MeshInMemoryDataset(InMemoryDataset):
-    def __init__(self, root, age_metadata_path, precomputed_storage_path='precomputed',
+    def __init__(self, config_data, age_metadata_path, precomputed_storage_path='precomputed',
                  dataset_type='train', normalize=True,
                  transform=None, pre_transform=None, template=None):
-        self._root = root
+        self._config_data = config_data
+        self.age_metadata_path = age_metadata_path
+        self._root = config_data['dataset_path']
         self._precomputed_storage_path = precomputed_storage_path
         if not os.path.isdir(precomputed_storage_path):
             os.mkdir(precomputed_storage_path)
@@ -303,6 +326,7 @@ class MeshInMemoryDataset(InMemoryDataset):
         self._dataset_type = dataset_type
         self._normalize = normalize
         self._template = template
+        self._config_data = config_data
 
         self._train_names, self._test_names, self._val_names = self.split_data(
             os.path.join(precomputed_storage_path, 'data_split.json'))
@@ -320,7 +344,7 @@ class MeshInMemoryDataset(InMemoryDataset):
             self.age_metadata = None
 
         super(MeshInMemoryDataset, self).__init__(
-            root, transform, pre_transform)
+            self._root, transform, pre_transform)
 
         if dataset_type == 'train':
             data_path = self.processed_paths[0]
@@ -386,6 +410,24 @@ class MeshInMemoryDataset(InMemoryDataset):
         age_metadata['age'] = (age_metadata['age'] - age_train_mean) / age_train_std
                 
         return age_metadata
+    
+    def remove_ages(self, train, test, val):
+
+        age_lower = int(self._config_data['dataset_age_range'].split("-")[0])
+        age_upper = int(self._config_data['dataset_age_range'].split("-")[1])
+
+        age_metadata = pd.read_csv(self.age_metadata_path, usecols=['id', 'age'])
+        age_metadata['id'] = age_metadata['id'].astype(str)
+
+        # Create a lookup dictionary
+        age_lookup = age_metadata.set_index('id')['age'].to_dict()
+   
+        # Process filenames and filter out entries with age not within the range [age_lower, age_upper]
+        train = [filename for filename in train if age_lower <= age_lookup.get(filename.split("_")[0].lstrip('0'), age_upper + 1) <= age_upper]
+        val = [filename for filename in val if age_lower <= age_lookup.get(filename.split("_")[0].lstrip('0'), age_upper + 1) <= age_upper]
+        test = [filename for filename in test if age_lower <= age_lookup.get(filename.split("_")[0].lstrip('0'), age_upper + 1) <= age_upper]
+
+        return train, test, val
         
 
     def split_data(self, data_split_list_path):
@@ -411,12 +453,15 @@ class MeshInMemoryDataset(InMemoryDataset):
             data = {'train': train_list, 'test': test_list, 'val': val_list}
             with open(data_split_list_path, 'w') as fp:
                 json.dump(data, fp)
+        
+        train_list, test_list, val_list = self.remove_ages(train_list, test_list, val_list)
+
         return train_list, test_list, val_list
 
     def load_mesh(self, filename):
         mesh_path = os.path.join(self._root, filename)
         mesh = trimesh.load_mesh(mesh_path, process=False)
-
+        
         mesh_vertices = mesh.vertices[self._template.mask_verts]
         mesh_verts = torch.tensor(mesh_vertices, dtype=torch.float,
                                   requires_grad=False)
@@ -453,6 +498,16 @@ class MeshInMemoryDataset(InMemoryDataset):
         age = age_metadata.loc[age_metadata['id'] == file_id, 'age'].values[0]
 
         return age
+    
+    def file_id(self, file):
+
+        file_str = file.split("_")[0]  
+        file_str = file_str.lstrip('0')  
+
+        file_id = torch.tensor(int(file_str))
+
+        return file_id 
+
 
     def _process_set(self, files_list):
         dataset = []
@@ -463,8 +518,9 @@ class MeshInMemoryDataset(InMemoryDataset):
                 mesh_verts = (mesh_verts - self.mean) / self.std
 
             mesh_age = self.age_data(fname)
+            mesh_name = self.file_id(fname)
 
-            data = Data(x=mesh_verts, age=mesh_age)
+            data = Data(x=mesh_verts, age=mesh_age, name=mesh_name)
 
             if self.pre_transform is not None:
                 data = self.pre_transform(data)

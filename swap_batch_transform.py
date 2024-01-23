@@ -12,6 +12,7 @@ class SwapFeatures:
 
     def __call__(self, batched_data):
         age_batch = batched_data.age
+        fname_batch = batched_data.name
         batch_size = batched_data.x.shape[0]
         new_batch = torch.zeros([batch_size ** 2, *batched_data.x.shape[1:]],
                                 device=batched_data.x.device,
@@ -25,7 +26,7 @@ class SwapFeatures:
                     vertices = batched_data.x.numpy()
                     new_batch[i * batch_size + j, ::] = self.swap(
                         vertices[i, ::], vertices[j, ::], key)
-        batched_data = Data(x=new_batch, swapped=key, age=age_batch)
+        batched_data = Data(x=new_batch, swapped=key, age=age_batch, name=fname_batch)
         return batched_data
 
     def swap(self, verts0, verts1, feature_key):
