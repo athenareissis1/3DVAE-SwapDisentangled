@@ -78,15 +78,22 @@ class Tester:
         # # with open(outfile_path, 'w') as outfile:
         # #     json.dump(metrics, outfile)
 
-        # age tests
-        # self.age_latent_changing(self._test_loader)
-        # self.age_encoder_check(self._test_loader)
-        # self.age_prediction_MLP(self._train_loader, self._test_loader)
-        # self.age_prediction_encode_output(self._test_loader)
-        # self.dataset_age_split()
-        self.random_rendering_template()
 
-        # self.interpolate_same_age(self._test_loader)
+
+        # no agae tests 
+        self.set_renderings_size(252)
+        self.set_rendering_background_color([1, 1, 1])
+        self.per_variable_range_experiments(use_z_stats=False)
+        self.random_generation_and_rendering(n_samples=16)
+
+
+        # age tests
+        self.age_prediction_encode_output(self._test_loader)
+        self.age_latent_changing(self._test_loader)
+        self.age_encoder_check(self._test_loader)
+        self.age_prediction_MLP(self._train_loader, self._test_loader)
+        self.dataset_age_split()
+        self.normalise_age()
 
 
     def _unnormalize_verts(self, verts, dev=None):
@@ -758,6 +765,27 @@ class Tester:
 
     # age related tests added here
 
+    def normalise_age(self):
+
+        age_metadata_path = self._config['data']['dataset_metadata_path']
+        age_metadata = pd.read_csv(age_metadata_path, usecols=['age'])
+        storage_path = os.path.join(self._manager._precomputed_storage_path, 'normalise_age.pkl')
+        with open(storage_path, 'rb') as file:
+            age_train_mean, age_train_std = \
+                pickle.load(file)
+                    
+        # actual_age = age_metadata['age']
+        normalised_ages = (age_metadata['age'] - age_train_mean) / age_train_std
+
+        # plot normalised_ages on a graph
+        plt.hist(normalised_ages, bins=30, edgecolor='black')
+        plt.title('Distribution of Normalised Ages')
+        plt.xlabel('Normalised Age')
+        plt.ylabel('Frequency')
+        plt.show()
+
+        plt.savefig(os.path.join(self._out_dir, 'normalised_ages.png'))
+
     def age_latent_changing(self, data_loader):
 
         """
@@ -780,7 +808,8 @@ class Tester:
         with open(storage_path, 'rb') as file:
             age_train_mean, age_train_std = \
                 pickle.load(file)
-        age_latent_ranges = self._config['testing']['age_latent_changing']
+        age_latent_changing = self._config['testing']['age_latent_changing']
+        age_latent_ranges = age_latent_changing.copy()
         for i in range(len(age_latent_ranges)):
             age_latent_ranges[i] = (age_latent_ranges[i] - age_train_mean) / age_train_std
         grid_nrows = len(age_latent_ranges)
@@ -833,6 +862,57 @@ class Tester:
         grid = make_grid(stacked_frames, padding=10, pad_value=1, nrow=grid_nrows) 
         save_image(grid, os.path.join(self._out_dir, 'age_latent_changing.png'))
 
+        ###############################
+
+        # try scaling the assigned ages to represent desired age (x=y line)
+
+        storage_path = os.path.join(self._out_dir, 'adjust_ages_sclae.pkl')
+        
+        with open(storage_path, 'rb') as file:
+            slope, intercept = \
+                pickle.load(file)
+            
+        # Adjust the predicted ages
+        age_latent_ranges_adjust = age_latent_changing.copy()
+        age_latent_ranges_adjust = (np.array(age_latent_ranges_adjust) - intercept) / slope
+
+        for i in range(len(age_latent_ranges_adjust)):
+            age_latent_ranges_adjust[i] = (age_latent_ranges_adjust[i] - age_train_mean) / age_train_std
+        grid_nrows = len(age_latent_ranges_adjust)
+
+        original_ages = []
+        z_all = []
+
+        for i in tqdm.tqdm(range(z.shape[0])):
+            new_z = z[i, ::].clone()
+            new_z_original = z[i, ::].clone()
+            gen_verts_original = self._manager.generate(new_z_original.to(self._device))
+            differences = []
+            age_latent_ranges_adjust[0] = new_z[-1]
+            original_age = age_latent_ranges_adjust[0].item()
+            original_age = (original_age * age_train_std) + age_train_mean
+            original_ages.append(original_age)
+
+            for j in range(grid_nrows):
+                new_z[-1] = age_latent_ranges_adjust[j]
+                gen_verts = self._manager.generate(new_z.to(self._device))
+
+                if self._normalized_data:
+                    gen_verts = self._unnormalize_verts(gen_verts)
+                    gen_verts_original = self._unnormalize_verts(gen_verts_original)
+
+                renderings = self._manager.render(gen_verts).cpu()
+                z_all.append(renderings.squeeze())
+                differences_from_original = self._manager.compute_vertex_errors(gen_verts, gen_verts_original)
+                differences_renderings = self._manager.render(gen_verts, differences_from_original, error_max_scale=5).cpu().detach()
+                differences.append(differences_renderings.squeeze())
+
+            z_all.extend(differences)
+        
+        stacked_frames = torch.stack(z_all)
+        grid = make_grid(stacked_frames, padding=10, pad_value=1, nrow=grid_nrows) 
+        save_image(grid, os.path.join(self._out_dir, 'age_latent_changing_adjusted_scale.png'))
+
     def absolute_difference(self, age, batch):
 
         """
@@ -857,40 +937,74 @@ class Tester:
         """
         
         This function calculates the mean absolute difference between the actual age and the age latent after being passed through the encoder once. 
+
+        Output: xxxxxxx
         
         """
+
+        storage_path = os.path.join(self._manager._precomputed_storage_path, 'normalise_age.pkl')
+
+        with open(storage_path, 'rb') as file:
+            age_train_mean, age_train_std = \
+                pickle.load(file)
         
         all_diff = []
+        age_original = []
+        age_predict = []
+        all_names = []
         for data in tqdm.tqdm(data_loader):
-            age = data.age
+
             batch = data.x
             if self._config['data']['swap_features']:
                 batch = batch[self._manager.batch_diagonal_idx, ::]
 
-            all_diff.extend(self.absolute_difference(age, batch))
+            z = self._manager.encode(batch.to(self._device)).detach().cpu()
 
+            name = data.name.squeeze().tolist()
+            
+            which_data_remove = self._config['data']['dataset_remove']
+
+            z_age = z[:, -1]
+            z_age = (z_age * age_train_std) + age_train_mean
+            z_age = z_age.squeeze().tolist()
+
+            age = (data.age * age_train_std) + age_train_mean
+            age = age.squeeze().tolist()
+
+            age_diff = abs(torch.tensor(age) - torch.tensor(z_age))
+            age_diff = age_diff.squeeze().tolist()
+
+            for i in range(z.shape[0]):
+                if name[i] in which_data_remove:
+                    pass
+                else:
+                    age_predict.append(z_age[i])
+                    age_original.append(age[i])                    
+                    all_diff.append(age_diff[i])
+                    all_names.append(name[i])
+            
         average_diff = np.mean(all_diff)
 
-        # print('age_encoder_check - Average absolute difference between GT age and age predicted: ' + str(average_diff))
+        # plot graph of actual age against age latent from encoder
 
-        line_to_add = 'age_encoder_check - Average absolute difference between GT age and age predicted: ' + str(average_diff)
+        age_range = self._config['data']['dataset_age_range']
 
-        # create a results file 
+        plt.clf()
 
-        filename = os.path.join(self._out_dir, 'results.txt')
+        plt.scatter(age_original, age_predict, color='blue')
+        plt.plot([0, 100], [0, 100], 'r--')
 
-        if not os.path.exists(filename):
-            with open(filename, 'w') as file:
-                file.write('')  # This will create an empty file. You can also write some content if needed.
-        else:
-            print(f"{filename} already exists.")
+        plt.title(f'Encoder accuracy of age latent ({age_range})')
+        plt.xlabel('Original age')
+        plt.ylabel('Predicted age')
 
-        with open(filename, 'a') as file:
-            file.write(line_to_add)
-            file.write('\n' * 2)
+        plt.text(0.1, 0.9, f'Mean absolute difference = {round(average_diff,2)}', transform=plt.gca().transAxes)
+
+        plt.savefig(os.path.join(self._out_dir, f'age_encoder_check_{age_range}.png'))
+        plt.savefig(os.path.join(self._out_dir, f'age_encoder_check_{age_range}.svg'))
 
         return average_diff
-
+    
     def age_prediction_MLP(self, train_loader, val_loader):
 
         """ 
@@ -938,8 +1052,6 @@ class Tester:
         mlp_reg.fit(train_latents_scaled, train_ages)
         
         val_ages_pred = mlp_reg.predict(val_latents_scaled)
-        df_temp = pd.DataFrame({'Actual': val_ages, 'Predicted': val_ages_pred})
-        df_temp.head()
 
         storage_path = os.path.join(self._manager._precomputed_storage_path, 'normalise_age.pkl')
         with open(storage_path, 'rb') as file:
@@ -949,8 +1061,6 @@ class Tester:
         val_ages = np.squeeze(val_ages.numpy())
         age_diff = abs(val_ages - val_ages_pred) * age_train_std
         average_age_diff = np.mean(age_diff)
-
-        # print('age_prediction_MLP - Average absolute difference between GT age and age predicted: ' + str(average_age_diff))
 
         line_to_add = 'age_prediction_MLP - Average absolute difference between GT age and age predicted: ' + str(average_age_diff)
 
@@ -991,6 +1101,7 @@ class Tester:
             if self._config['data']['swap_features']:
                     x = batch.x[self._manager.batch_diagonal_idx, ::]    
                     age = batch.age 
+                    name = batch.name
 
             z = self._manager.encode(x.to(self._device)).detach().cpu()
             
@@ -999,22 +1110,30 @@ class Tester:
                 age_train_mean, age_train_std = \
                     pickle.load(file)
 
+            data_remove = self._config['data']['dataset_remove']
+
             for i in tqdm.tqdm(range(z.shape[0])):
-                age_latent = random.randrange(100)
-                age_latents.append(age_latent)
-                age_latent_norm = (age_latent - age_train_mean) / age_train_std
-                z[i, -1] = age_latent_norm
+                if name[i].item() in data_remove:
+                    pass
+                else:
+                    age_latent = random.randrange(100)
+                    age_latents.append(age_latent)
+                    age_latent_norm = (age_latent - age_train_mean) / age_train_std
+                    z[i, -1] = age_latent_norm
 
             gen_verts = self._manager.generate(z.to(self._device))
             z_2 = self._manager.encode(gen_verts.to(self._device)).detach().cpu()
 
             for i in tqdm.tqdm(range(z.shape[0])):
-                age_pred = z_2[i][-1].item()
-                age_pred = (age_pred * age_train_std) + age_train_mean
-                age_preds.append(age_pred)
-                age_actual = age[i].item()
-                age_actual = (age_actual * age_train_std) + age_train_mean
-                age_actuals.append(age_actual)
+                if name[i].item() in data_remove:
+                    pass
+                else:
+                    age_pred = z_2[i][-1].item()
+                    age_pred = (age_pred * age_train_std) + age_train_mean
+                    age_preds.append(age_pred)
+                    age_actual = age[i].item()
+                    age_actual = (age_actual * age_train_std) + age_train_mean
+                    age_actuals.append(age_actual)
                 
 
         average_pred_diff_latent_pred = np.mean(np.abs(np.array(age_latents) - np.array(age_preds)))
@@ -1063,11 +1182,49 @@ class Tester:
 
         plt.savefig(os.path.join(self._out_dir, 'age_encoder_prediciton_actual_pred.png'))
 
+
+        ##############
+
+        # try and get predictions to x=y line
+
+        storage_path = os.path.join(self._out_dir, 'adjust_ages_sclae.pkl')
+        
+        try:
+            with open(storage_path, 'rb') as file:
+                slope, intercept = \
+                    pickle.load(file)
+        except FileNotFoundError:
+            print("Computing slope and intercept")
+            if not os.path.isdir(self._manager._precomputed_storage_path):
+                os.mkdir(self._manager._precomputed_storage_path)
+            
+            # Fit a line to the data
+            coefficients = np.polyfit(age_latents, age_preds, 1)
+            slope, intercept = coefficients
+
+            with open(storage_path, 'wb') as file:
+                pickle.dump(
+                    [slope, intercept], file)
+                
+        # Adjust the predicted ages
+        adjusted_age_preds = (np.array(age_preds) - intercept) / slope
+
+        plt.clf()
+
+        plt.scatter(age_latents, adjusted_age_preds)
+        plt.plot([0, 100], [0, 100], 'r--')
+
+        plt.title('Encoders prediction after age latent change - adjusting scale')
+        plt.xlabel('Random assigned age')
+        plt.ylabel('Predicted age - adjusted scale') 
+
+        plt.savefig(os.path.join(self._out_dir, 'age_encoder_prediciton_adjusted_scale.png'))
+
+
     def dataset_age_split(self):
         age_metadata_path = self._config['data']['dataset_metadata_path']
-        precomputed_storage_path = self._config['data']['precomputed_path']
         age_metadata = pd.read_csv(age_metadata_path, usecols=['age'], header=0)
-        storage_path = os.path.join(precomputed_storage_path, 'age_dataset_split.txt')
+        storage_path = os.path.join(self._manager._precomputed_storage_path, 'age_dataset_split.txt')
 
         if not os.path.exists(storage_path):
             with open(storage_path, 'w') as file:
@@ -1119,12 +1276,6 @@ class Tester:
         plt.savefig(os.path.join(self._out_dir, 'age_distribution.png'))
         plt.clf()
 
-    def random_rendering_template(self):
-        template = self._manager.template#.mask_verts
-        rendering = self._manager.render(template).cpu()
-        save_image(rendering, os.path.join(self._out_dir, 'template_render.png'))
-
-
     def interpolate_same_age(self, data_loader):
         batch = next(iter(data_loader))
 
@@ -1171,7 +1322,6 @@ class Tester:
 
 
             batch_idx += 1
-
 
 
 if __name__ == '__main__':
@@ -1230,13 +1380,18 @@ if __name__ == '__main__':
     # # print(tester.compute_diversity())
     # # tester.evaluate_gen(test_loader, n_sampled_points=2048)
 
+
+    # no age test
+    tester.set_renderings_size(256)
+    tester.set_rendering_background_color()
+    tester.per_variable_range_experiments()
+    tester.random_generation_and_rendering(n_samples=16)
+
     # age tests
     if configurations['data']['age_disentanglement'] == True:
-        # tester.age_latent_changing(test_loader)
-        # tester.age_encoder_check(test_loader)
-        # tester.age_prediction_MLP(train_loader, test_loader)
-        # tester.age_prediction_encode_output(test_loader)
-        # tester.dataset_age_split()
-        tester.random_rendering_template()
-
-        # tester.interpolate_same_age(test_loader)
+        tester.age_prediction_encode_output(test_loader)
+        tester.age_latent_changing(test_loader)
+        tester.age_encoder_check(test_loader)
+        tester.age_prediction_MLP(train_loader, test_loader)
+        tester.dataset_age_split()
+        tester.normalise_age()
