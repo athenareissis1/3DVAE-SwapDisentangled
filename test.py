@@ -54,16 +54,16 @@ class Tester:
         self.per_variable_range_experiments(use_z_stats=False)
         self.random_generation_and_rendering(n_samples=16)
         self.random_generation_and_save(n_samples=16)
-        self.interpolate()
+        self.interpolate() # not working
         if self._config['data']['dataset_type'] == 'faces':
             self.direct_manipulation()
 
         # Quantitative evaluation
-        self.evaluate_gen(self._test_loader, n_sampled_points=2048)
+        self.evaluate_gen(self._test_loader, n_sampled_points=2048) # takes a while to run
         recon_errors = self.reconstruction_errors(self._test_loader)
         train_set_diversity = self.compute_diversity_train_set()
         diversity = self.compute_diversity()
-        specificity = self.compute_specificity()
+        specificity = self.compute_specificity() # takes a while to run
         metrics = {'recon_errors': recon_errors,
                    'train_set_diversity': train_set_diversity,
                    'diversity': diversity,
@@ -649,8 +649,8 @@ class Tester:
         v_1 = None
         distances = [0]
         for i, fname in enumerate(test_list):
-            mesh_path = os.path.join(meshes_root, fname + '.ply')
-            mesh = trimesh.load_mesh(mesh_path, 'ply', process=False)
+            mesh_path = os.path.join(meshes_root, fname)
+            mesh = trimesh.load_mesh(mesh_path, process=False)
             mesh_verts = torch.tensor(mesh.vertices, dtype=torch.float,
                                       requires_grad=False, device='cpu')
             if i == 0:

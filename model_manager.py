@@ -476,13 +476,15 @@ class ModelManager(torch.nn.Module):
             verts=batched_verts,
             faces=template.face.t().expand(batch_size, -1, -1),
             textures=textures)
+        
+        cam_light_dist = 0.05
 
         rotation, translation = look_at_view_transform(
-            dist=2.5, elev=0, azim=15)
+            dist=cam_light_dist, elev=0, azim=15)
         cameras = FoVPerspectiveCameras(R=rotation, T=translation,
-                                        device=self._rend_device)
+                                        device=self._rend_device, znear=0.05)
 
-        lights = PointLights(location=[[0.0, 0.0, 3.0]],
+        lights = PointLights(location=[[0.0, 0.0, cam_light_dist]],
                              diffuse_color=[[1., 1., 1.]],
                              device=self._rend_device)
 

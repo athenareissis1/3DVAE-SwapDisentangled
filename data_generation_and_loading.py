@@ -137,7 +137,7 @@ class MeshCollater:
                 f"DataLoader found invalid type: {type(data_list[0])}. "
                 f"Expected torch_geometric.data.Data instead")
 
-        keys = [set(data.keys) for data in data_list]
+        keys = [set(data.keys()) for data in data_list]
         keys = list(set.union(*keys))
         batched_data = Data()
         for key in keys:
@@ -229,8 +229,8 @@ class MeshDataset(Dataset):
         return train_list, test_list, val_list
 
     def load_mesh(self, filename):
-        mesh_path = os.path.join(self._root, filename + '.ply')
-        mesh = trimesh.load_mesh(mesh_path, 'ply', process=False)
+        mesh_path = os.path.join(self._root, filename)
+        mesh = trimesh.load_mesh(mesh_path, process=False)
         mesh_verts = torch.tensor(mesh.vertices, dtype=torch.float,
                                   requires_grad=False)
         return mesh_verts
@@ -367,8 +367,8 @@ class MeshInMemoryDataset(InMemoryDataset):
         return train_list, test_list, val_list
 
     def load_mesh(self, filename, show=False):
-        mesh_path = os.path.join(self._root, filename + '.ply')
-        mesh = trimesh.load_mesh(mesh_path, 'ply', process=False)
+        mesh_path = os.path.join(self._root, filename)
+        mesh = trimesh.load_mesh(mesh_path, process=False)
         mesh_verts = torch.tensor(mesh.vertices, dtype=torch.float,
                                   requires_grad=False)
         if show:
