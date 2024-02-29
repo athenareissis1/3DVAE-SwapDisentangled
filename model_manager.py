@@ -35,6 +35,7 @@ class ModelManager(torch.nn.Module):
         self._optimization_params = configurations['optimization']
         self._precomputed_storage_path = precomputed_storage_path
         self._normalized_data = configurations['data']['normalize_data']
+        self._age_disentanglement = configurations['data']['age_disentanglement']
 
         self.to_mm_const = configurations['data']['to_mm_constant']
         self.device = device
@@ -70,6 +71,7 @@ class ModelManager(torch.nn.Module):
             self._optimization_params['laplacian_weight'])
         self._w_dip_loss = float(self._optimization_params['dip_weight'])
         self._w_factor_loss = float(self._optimization_params['factor_weight'])
+        self._w_age_loss = float(self._optimization_params['age_weight'])
 
         self._rend_device = rendering_device if rendering_device else device
         self.default_shader = HardGouraudShader(
@@ -90,6 +92,8 @@ class ModelManager(torch.nn.Module):
 
         if self._w_latent_cons_loss > 0:
             assert self._swap_features
+        if self._w_age_loss > 0:
+            assert self._age_disentanglement
         if self._w_dip_loss > 0:
             assert self._w_kl_loss > 0
         if self._w_factor_loss > 0:
@@ -100,11 +104,12 @@ class ModelManager(torch.nn.Module):
                 self._factor_discriminator.parameters(),
                 lr=float(self._optimization_params['lr']), betas=(0.5, 0.9),
                 weight_decay=self._optimization_params['weight_decay'])
+        
 
     @property
     def loss_keys(self):
         return ['reconstruction', 'kl', 'dip', 'factor',
-                'latent_consistency', 'laplacian', 'tot']
+                'latent_consistency', 'laplacian', 'age', 'tot']
 
     @property
     def latent_regions(self):
@@ -181,6 +186,8 @@ class ModelManager(torch.nn.Module):
     def _compute_latent_regions(self):
         region_names = list(self.template.feat_and_cont.keys())
         latent_size = self._model_params['latent_size']
+        if self._age_disentanglement:
+            latent_size -= self._model_params['age_latent_size']
         assert latent_size % len(region_names) == 0
         region_size = latent_size // len(region_names)
         return {k: [i * region_size, (i + 1) * region_size]
@@ -235,7 +242,7 @@ class ModelManager(torch.nn.Module):
         loss_laplacian = self._compute_laplacian_regularizer(reconstructed)
 
         if self._w_kl_loss > 0:
-            loss_kl = self._compute_kl_divergence_loss(mu, logvar)
+            loss_kl = self._compute_kl_divergence_loss(mu, logvar, self._age_disentanglement)
         else:
             loss_kl = torch.tensor(0, device=device)
 
@@ -249,15 +256,21 @@ class ModelManager(torch.nn.Module):
         else:
             loss_z_cons = torch.tensor(0, device=device)
 
+        if self._age_disentanglement:
+            loss_age = self._compute_age_loss(z, data.norm_age)
+        else:
+            loss_age = torch.tensor(0, device=device)
+
         loss_tot = loss_recon + \
             self._w_kl_loss * loss_kl + \
             self._w_dip_loss * loss_dip + \
             self._w_latent_cons_loss * loss_z_cons + \
-            self._w_laplacian_loss * loss_laplacian
+            self._w_laplacian_loss * loss_laplacian + \
+            self._w_age_loss * loss_age
 
         if train:
             loss_tot.backward()
-            self._optimizer.step()
+            self._optimizer.step() 
 
         return {'reconstruction': loss_recon.item(),
                 'kl': loss_kl.item(),
@@ -265,6 +278,7 @@ class ModelManager(torch.nn.Module):
                 'factor': 0,
                 'latent_consistency': loss_z_cons.item(),
                 'laplacian': loss_laplacian.item(),
+                'age': loss_age.item(),
                 'tot': loss_tot.item()}
 
     def _do_factor_vae_iteration(self, data, device='cpu', train=True):
@@ -334,10 +348,13 @@ class ModelManager(torch.nn.Module):
         return loss.sum() / bs
 
     @staticmethod
-    def _compute_kl_divergence_loss(mu, logvar):
+    def _compute_kl_divergence_loss(mu, logvar, age_disentanglement):
+        if age_disentanglement:
+            mu = mu[:,:-1]
+            logvar = logvar[:,:-1]
         kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
         return torch.mean(kl, dim=0)
-
+            
     def _compute_dip_loss(self, mu, logvar):
         centered_mu = mu - mu.mean(dim=1, keepdim=True)
         cov_mu = centered_mu.t().matmul(centered_mu).squeeze()
@@ -361,6 +378,8 @@ class ModelManager(torch.nn.Module):
         eta1 = self._optimization_params['latent_consistency_eta1']
         eta2 = self._optimization_params['latent_consistency_eta2']
         latent_region = self._latent_regions[swapped_feature]
+        if self._age_disentanglement:
+            z = z[:, :-1]
         z_feature = z[:, latent_region[0]:latent_region[1]].view(bs, bs, -1)
         z_else = torch.cat([z[:, :latent_region[0]],
                             z[:, latent_region[1]:]], dim=1).view(bs, bs, -1)
@@ -390,6 +409,17 @@ class ModelManager(torch.nn.Module):
         return (1 / (bs ** 3 - bs ** 2)) * \
                (torch.sum(torch.max(zero, lr - dr + eta2)) +
                 torch.sum(torch.max(zero, lg - dg + eta1)))
+    
+    def _compute_age_loss(self, z, gt_age):
+        if self._swap_features:
+            z_age = z[self.batch_diagonal_idx, -1]
+        else:
+            z_age = z[:, -1]
+        gt_age = gt_age.to(dtype=torch.float32).squeeze()
+        age_loss = self.compute_mse_loss(z_age, gt_age)
+
+        return age_loss
+
 
     @staticmethod
     def _permute_latent_dims(latent_sample):

@@ -46,6 +46,9 @@ if opts.generate_data:
     data_generator(config['data']['number_of_meshes'],
                    config['data']['std_pca_latent'], opts.generate_data)
 
+if config['data']['age_disentanglement']:
+    config['model']['latent_size'] += config['model']['age_latent_size']
+
 manager = ModelManager(
     configurations=config, device=device,
     precomputed_storage_path=config['data']['precomputed_path'])

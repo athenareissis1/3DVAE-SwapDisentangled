@@ -11,7 +11,7 @@ data:
   number_of_meshes: 10000                                                       # for data generation, > 0 if you want to generate data
   number_of_workers: 8
   swap_features: True                                                           # if True, the resulting batch size will be batch_size^2
-  age_disentanglement: Flase                                                     # if True, an extra feature is added to the latent vector that represents age & age related losses are added
+  age_disentanglement: True                                                     # if True, an extra feature is added to the latent vector that represents age & age related losses are added
 
 optimization:
   epochs: 600
@@ -42,6 +42,8 @@ optimization:
 
   factor_weight: 0                                                              # if 0, no factor VAE
 
+  age_weight: 0.9                                                                 # if 0, no age loss is used
+
 model:
   sampling:
     type: basic                                                                 # {basic, r_weighted}. Delete precomputed file if changed
@@ -51,9 +53,13 @@ model:
     dilation: [1, 1, 1, 1]                                                      # spiral dilation for each convolution. Delete precomputed file if changed.
   in_channels: 3                                                                # number of input vertex features. Most likely 3 (x, y, z)
   out_channels: [32, 32, 32, 64]                                                # channels of intermediate layers
-  latent_size: 60                                                              # size of the latent vector
+  latent_size: 60                                                               # size of the latent vector
+  age_latent_size: 1                                                            # size of additional age latents
   pre_z_sigmoid: False
 
 logging_frequency:
   tb_renderings: 50
   save_weights: 200
+
+testing:
+  age_latent_changing: [0, 0, 25, 50, 75, 100]                               # first value will always change to what the original latent age value is

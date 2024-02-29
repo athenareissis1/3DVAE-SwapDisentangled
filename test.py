@@ -23,6 +23,7 @@ from evaluation_metrics import compute_all_metrics, jsd_between_point_cloud_sets
 class Tester:
     def __init__(self, model_manager, norm_dict,
                  train_load, test_load, out_dir, config):
+    
         self._manager = model_manager
         self._manager.eval()
         self._device = model_manager.device
@@ -45,33 +46,35 @@ class Tester:
             1255, 9881, 32055, 45778, 5355, 27515, 18482, 33691]
 
     def __call__(self):
-        self.set_renderings_size(512)
-        self.set_rendering_background_color([1, 1, 1])
+        # self.set_renderings_size(512)
+        # self.set_rendering_background_color([1, 1, 1])
 
-        # Qualitative evaluations
-        if self._config['data']['swap_features']:
-            self.latent_swapping(next(iter(self._test_loader)).x)
-        self.per_variable_range_experiments(use_z_stats=False)
-        self.random_generation_and_rendering(n_samples=16)
-        self.random_generation_and_save(n_samples=16)
-        self.interpolate() # not working
-        if self._config['data']['dataset_type'] == 'faces':
-            self.direct_manipulation()
+        # # Qualitative evaluations
+        # if self._config['data']['swap_features']:
+        #     self.latent_swapping(next(iter(self._test_loader)).x)
+        # self.per_variable_range_experiments(use_z_stats=False)
+        # self.random_generation_and_rendering(n_samples=16)
+        # self.random_generation_and_save(n_samples=16)
+        # self.interpolate() # not working
+        # if self._config['data']['dataset_type'] == 'faces':
+        #     self.direct_manipulation()
 
-        # Quantitative evaluation
-        self.evaluate_gen(self._test_loader, n_sampled_points=2048) # takes a while to run
-        recon_errors = self.reconstruction_errors(self._test_loader)
-        train_set_diversity = self.compute_diversity_train_set()
-        diversity = self.compute_diversity()
-        specificity = self.compute_specificity() # takes a while to run
-        metrics = {'recon_errors': recon_errors,
-                   'train_set_diversity': train_set_diversity,
-                   'diversity': diversity,
-                   'specificity': specificity}
+        # # Quantitative evaluation
+        # self.evaluate_gen(self._test_loader, n_sampled_points=2048) # takes a while to run
+        # recon_errors = self.reconstruction_errors(self._test_loader)
+        # train_set_diversity = self.compute_diversity_train_set()
+        # diversity = self.compute_diversity()
+        # specificity = self.compute_specificity() # takes a while to run
+        # metrics = {'recon_errors': recon_errors,
+        #            'train_set_diversity': train_set_diversity,
+        #            'diversity': diversity,
+        #            'specificity': specificity}
 
-        outfile_path = os.path.join(self._out_dir, 'eval_metrics.json')
-        with open(outfile_path, 'w') as outfile:
-            json.dump(metrics, outfile)
+        # outfile_path = os.path.join(self._out_dir, 'eval_metrics.json')
+        # with open(outfile_path, 'w') as outfile:
+        #     json.dump(metrics, outfile)
+
+        self.age_latent_changing(self._test_loader)
 
     def _unnormalize_verts(self, verts, dev=None):
         d = self._device if dev is None else dev
@@ -731,6 +734,186 @@ class Tester:
         renderings = self._manager.render(gen_verts).cpu()
         im = make_grid(renderings, padding=10, pad_value=1, nrow=len(features))
         save_image(im, os.path.join(self._out_dir, 'interpolate_all.png'))
+
+
+    # AGE TESTS
+
+    def get_z(self, batch):
+
+        """
+        
+        This function computes z depending on if the extra linear layers have been added to model or not 
+
+        """
+        
+        # if extra_mlp_layers == False:
+        #     z = self._manager.encode(batch.to(self._device)).detach()
+        # else:
+        #     mu = self._manager.encode(batch.to(self._device)).detach()
+        #     features = mu[:, :-1]
+        #     age = mu[:, -1].unsqueeze(1)
+        #     features_no_age = self._manager._net.mlp_feature_layers(features)
+        #     z = torch.cat((features_no_age, age), dim=1)
+
+        z = self._manager.encode(batch.to(self._device)).detach()
+
+        return z
+    
+    def age_latent_changing(self, data_loader):
+
+        """
+        
+        This function generates an image of 4 subjects from a batch and changes the age latent to 5 differenet ages and displays them with their difference maps compared to the orginal mesh. 
+        A subjects goes through the encoder, the age latent is changed, then goes through the decoder. 
+
+        Output: image of a batch with 5 different ages & difference maps when compared to the:
+         - original
+         - previous
+         - first column
+
+        """
+
+        batch = next(iter(data_loader))
+
+        if self._config['data']['swap_features']:
+                batch = batch.x[self._manager.batch_diagonal_idx, ::]        
+
+        z = self.get_z(batch)
+
+        z_all = []
+        z_all_prev = []
+        z_all_first = []
+
+        error_scale = 10
+
+        storage_path = os.path.join(self._manager._precomputed_storage_path, 'normalise_age.pkl')
+        with open(storage_path, 'rb') as file:
+            age_train_mean, age_train_std = \
+                pickle.load(file)
+        age_latent_ranges = self._config['testing']['age_latent_changing']
+        age_latent_ranges_original = age_latent_ranges.copy()
+        for i in range(len(age_latent_ranges)):
+            age_latent_ranges[i] = (age_latent_ranges[i] - age_train_mean) / age_train_std
+        grid_nrows = len(age_latent_ranges)
+
+        original_ages = []
+
+        for i in tqdm.tqdm(range(z.shape[0])):
+            new_z = z[i, ::].clone()
+            new_z_original = z[i, ::].clone()
+            gen_verts_original = self._manager.generate(new_z_original.to(self._device))
+            differences = []
+            differences_prev = []
+            differences_first = []
+            age_latent_ranges[0] = new_z[-1]
+            original_age = age_latent_ranges[0].item()
+            original_age = round((original_age * age_train_std) + age_train_mean)
+            original_ages.append(original_age)
+
+            for j in range(grid_nrows):
+                new_z[-1] = age_latent_ranges[j]
+                gen_verts = self._manager.generate(new_z.to(self._device))
+
+                if self._normalized_data:
+                    gen_verts = self._unnormalize_verts(gen_verts)
+                    gen_verts_original = self._unnormalize_verts(gen_verts_original)
+
+                renderings = self._manager.render(gen_verts).cpu()
+                z_all.append(renderings.squeeze())
+                if j != 0:
+                    z_all_prev.append(renderings.squeeze())
+                    z_all_first.append(renderings.squeeze())
+
+                # difference from original
+                differences_from_original = self._manager.compute_vertex_errors(gen_verts, gen_verts_original)
+                differences_renderings = self._manager.render(gen_verts, differences_from_original, error_max_scale=error_scale).cpu().detach()
+                differences.append(differences_renderings.squeeze())
+
+                # difference from previous
+                if j == 0:
+                    pass
+                elif j == 1:
+                    differences_from_previous = self._manager.compute_vertex_errors(gen_verts, gen_verts)
+                    differences_renderings_prev = self._manager.render(gen_verts, differences_from_previous, error_max_scale=error_scale).cpu().detach()
+                    differences_prev.append(differences_renderings_prev.squeeze())
+                else:
+                    differences_from_previous = self._manager.compute_vertex_errors(gen_verts, gen_verts_prev)
+                    differences_renderings_prev = self._manager.render(gen_verts, differences_from_previous, error_max_scale=error_scale).cpu().detach()
+                    differences_prev.append(differences_renderings_prev.squeeze())
+
+                # difference from first 
+                if j == 0:
+                    pass
+                elif j == 1:
+                    gen_verts_first = gen_verts
+                    differences_from_first = self._manager.compute_vertex_errors(gen_verts, gen_verts)
+                    differences_renderings_first = self._manager.render(gen_verts, differences_from_first, error_max_scale=error_scale).cpu().detach()
+                    differences_first.append(differences_renderings_first.squeeze())
+                else:
+                    differences_from_first = self._manager.compute_vertex_errors(gen_verts, gen_verts_first)
+                    differences_renderings_first = self._manager.render(gen_verts, differences_from_first, error_max_scale=error_scale).cpu().detach()
+                    differences_first.append(differences_renderings_first.squeeze())
+                
+                gen_verts_prev = gen_verts
+
+            z_all.extend(differences)
+            z_all_prev.extend(differences_prev)
+            z_all_first.extend(differences_first)
+
+        # create a results file 
+
+        line_to_add_1 = 'age_latent_changing original ages: ' + str(original_ages)
+        line_to_add_2 = 'age_latent_changing new ages: ' + str(age_latent_ranges_original)
+
+        filename = os.path.join(self._out_dir, 'results.txt')
+
+        if not os.path.exists(filename):
+            with open(filename, 'w') as file:
+                file.write('')
+        else:
+            print(f"{filename} already exists.")
+
+        with open(filename, 'a') as file:
+            file.write(line_to_add_1)
+            file.write('\n' * 2)
+            file.write(line_to_add_2)
+            file.write('\n' * 2)
+
+        # difference from original 
+        stacked_frames = torch.stack(z_all)
+        grid = make_grid(stacked_frames, padding=10, pad_value=1, nrow=grid_nrows) 
+        save_image(grid, os.path.join(self._out_dir, f'age_latent_changing_original_{age_latent_ranges_original}.png'))
+
+        # difference from previous 
+        stacked_frames_prev = torch.stack(z_all_prev)
+        grid_prev = make_grid(stacked_frames_prev, padding=10, pad_value=1, nrow=grid_nrows-1) 
+        save_image(grid_prev, os.path.join(self._out_dir, f'age_latent_changing_previous_{age_latent_ranges_original}.png'))
+
+        # difference from first 
+        stacked_frames_first = torch.stack(z_all_first)
+        grid_first = make_grid(stacked_frames_first, padding=10, pad_value=1, nrow=grid_nrows-1) 
+        save_image(grid_first, os.path.join(self._out_dir, f'age_latent_changing_first_{age_latent_ranges_original}.png'))
+
+        # ##################
+
+        # # generate a colour bar for /plots 
+
+        # stacked_frames = torch.stack(z_all)
+        # grid = make_grid(stacked_frames, padding=10, pad_value=1, nrow=grid_nrows) 
+
+        # # Convert the tensor to a numpy array and transpose the dimensions for matplotlib
+        # grid_np = grid.numpy().transpose((1, 2, 0))
+
+        # plt.figure(figsize=(10, 10))
+        # plt.imshow(grid_np, interpolation='nearest', vmin=0, vmax=error_scale, cmap='plasma')  # Set the colorbar range to 0-5 and colormap to 'plasma'
+        # cbar = plt.colorbar(cmap='plasma')  # Set the colorbar colormap to 'plasma'
+        # cbar.set_label('Error (mm)')
+        # plt.savefig(os.path.join(self._out_dir, f'colour bar_{age_latent_ranges_original}.png'))
+        # plt.close()
+
+        # ##################
+
+
 
     @staticmethod
     def vector_linspace(start, finish, steps):

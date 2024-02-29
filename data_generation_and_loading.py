@@ -4,6 +4,7 @@ import pickle
 import tqdm
 import trimesh
 import torch
+import pandas as pd
 
 import numpy as np
 
@@ -92,17 +93,17 @@ def get_data_loaders(config, template=None):
     batch_size = config['optimization']['batch_size']
 
     train_set = MeshInMemoryDataset(
-        data_config['dataset_path'], dataset_type='train',
+        data_config, dataset_type='train',
         normalize=data_config['normalize_data'], template=template)
     validation_set = MeshInMemoryDataset(
-        data_config['dataset_path'], dataset_type='val',
+        data_config, dataset_type='val',
         normalize=data_config['normalize_data'], template=template)
     test_set = MeshInMemoryDataset(
-        data_config['dataset_path'], dataset_type='test',
+        data_config, dataset_type='test',
         normalize=data_config['normalize_data'], template=template)
     normalization_dict = train_set.normalization_dict
 
-    swapper = SwapFeatures(template) if data_config['swap_features'] else None
+    swapper = SwapFeatures(template, data_config) if data_config['swap_features'] else None
 
     train_loader = MeshLoader(train_set, batch_size, shuffle=True,
                               drop_last=True, feature_swapper=swapper,
@@ -283,7 +284,8 @@ class MeshInMemoryDataset(InMemoryDataset):
     def __init__(self, root, precomputed_storage_path='precomputed',
                  dataset_type='train', normalize=True,
                  transform=None, pre_transform=None, template=None):
-        self._root = root
+        self._config_data = root
+        self._root = root['dataset_path']
         self._precomputed_storage_path = precomputed_storage_path
         if not os.path.isdir(precomputed_storage_path):
             os.mkdir(precomputed_storage_path)
@@ -294,6 +296,10 @@ class MeshInMemoryDataset(InMemoryDataset):
 
         self._train_names, self._test_names, self._val_names = self.split_data(
             os.path.join(precomputed_storage_path, 'data_split.json'))
+        
+        if root['age_disentanglement']:
+            self._age_metadata_path = root['dataset_metadata_path']
+            self._age_metadata = self.normalise_age()
 
         self._processed_files = [f + '.pt' for f in self.raw_file_names]
 
@@ -302,8 +308,9 @@ class MeshInMemoryDataset(InMemoryDataset):
         self.mean = normalization_dict['mean']
         self.std = normalization_dict['std']
 
+        # this is where the data gets processed
         super(MeshInMemoryDataset, self).__init__(
-            root, transform, pre_transform)
+            root['dataset_path'], transform, pre_transform)
 
         if dataset_type == 'train':
             data_path = self.processed_paths[0]
@@ -400,6 +407,58 @@ class MeshInMemoryDataset(InMemoryDataset):
             torch.save(normalization_dict, normalization_dict_path)
         return normalization_dict
 
+    def file_id(self, fname):
+        file_id = fname.split("_")[0].lstrip('0') 
+        file_id = torch.tensor(int(file_id))
+
+        return file_id 
+
+    def normalise_age(self):
+
+        train_id = []
+        val_id = []
+        test_id = []
+        age_metadata = pd.read_csv(self._age_metadata_path, usecols=['id', 'age'])
+        storage_path = os.path.join(self._precomputed_storage_path, 'normalise_age.pkl')
+
+        for i in range(len(self._train_names)):
+            train_id.append(np.int64(self.file_id(self._train_names[i])))
+        for i in range(len(self._val_names)):
+            val_id.append(np.int64(self.file_id(self._val_names[i])))
+        for i in range(len(self._test_names)):
+            test_id.append(np.int64(self.file_id(self._test_names[i])))
+        
+        try:
+            with open(storage_path, 'rb') as file:
+                age_train_mean, age_train_std = \
+                    pickle.load(file)
+        except FileNotFoundError:
+            print("Computing mean and std on the ages of the training data")
+            if not os.path.isdir(self._precomputed_storage_path):
+                os.mkdir(self._precomputed_storage_path)
+
+            age_train_metadata = age_metadata[age_metadata['id'].isin(train_id)]
+            age_train_mean = np.mean(age_train_metadata['age'])
+            age_train_std = np.std(age_train_metadata['age'])
+
+            with open(storage_path, 'wb') as file:
+                pickle.dump(
+                    [age_train_mean, age_train_std], file)
+
+        all_ids = train_id + val_id + test_id
+        age_metadata = age_metadata[age_metadata['id'].isin(all_ids)]
+
+        age_metadata['norm_age'] = (age_metadata['age'] - age_train_mean) / age_train_std
+                
+        return age_metadata
+
+    def age_data(self, fname):
+        file_id = np.int64(self.file_id(fname))
+        age = self._age_metadata.loc[self._age_metadata['id'] == file_id, 'age'].values[0]
+        norm_age = self._age_metadata.loc[self._age_metadata['id'] == file_id, 'norm_age'].values[0]
+
+        return age, norm_age
+
     def _process_set(self, files_list):
         dataset = []
         for fname in tqdm.tqdm(files_list):
@@ -408,12 +467,19 @@ class MeshInMemoryDataset(InMemoryDataset):
             if self._normalize:
                 mesh_verts = (mesh_verts - self.mean) / self.std
 
-            data = Data(x=mesh_verts)
+            if self._config_data['age_disentanglement']:
+                mesh_age, mesh_norm_age = self.age_data(fname)
+                mesh_name = self.file_id(fname)
+                data = Data(x=mesh_verts, age=mesh_age, norm_age=mesh_norm_age, fname=mesh_name)
+            else:
+                data = Data(x=mesh_verts)
 
             if self.pre_transform is not None:
                 data = self.pre_transform(data)
 
-            dataset.append(data)
+            if not np.isnan(data.age):
+                dataset.append(data)
+
         return dataset
 
     def process(self):
