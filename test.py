@@ -5,6 +5,7 @@ import tqdm
 import trimesh
 import torch.nn
 import pytorch3d.loss
+import random
 
 import numpy as np
 import pandas as pd
@@ -74,7 +75,38 @@ class Tester:
         # with open(outfile_path, 'w') as outfile:
         #     json.dump(metrics, outfile)
 
-        self.age_latent_changing(self._test_loader)
+        # TEST TO RUN
+        self.set_renderings_size(512)
+        self.set_rendering_background_color([1, 1, 1])
+        self.per_variable_range_experiments(use_z_stats=False)
+        self.random_generation_and_rendering(n_samples=16)
+
+        self.age_encoder_check(self._test_loader)
+
+        if self._config['model']['conditional_vae']:
+            self.conditional_age_latent_changing(self._test_loader)
+        else:
+            self.age_latent_changing(self._test_loader)
+            self.age_prediction_encode_output(self._test_loader)
+            
+
+    def conditional_data(self, data):
+
+        assert self._config['data']['swap_features'] == False
+
+        x = data.x
+        age = data.norm_age
+
+        # Expand and repeat ages to match the face_meshes shape
+        age_expanded = age.unsqueeze(-1).expand(-1, x.shape[1], 1)
+
+        # Concatenate along the last dimension
+        mesh_with_age = torch.cat((x, age_expanded), dim=2)
+        x = mesh_with_age.float()
+
+        data.x = x
+
+        return data
 
     def _unnormalize_verts(self, verts, dev=None):
         d = self._device if dev is None else dev
@@ -98,6 +130,9 @@ class Tester:
         except FileNotFoundError:
             latents_list = []
             for data in tqdm.tqdm(data_loader):
+
+                if self._config['model']['conditional_vae']:
+                    data = self.conditional_data(data)
                 latents_list.append(self._manager.encode(
                     data.x.to(self._device)).detach().cpu())
             latents = torch.cat(latents_list, dim=0)
@@ -754,6 +789,7 @@ class Tester:
         #     age = mu[:, -1].unsqueeze(1)
         #     features_no_age = self._manager._net.mlp_feature_layers(features)
         #     z = torch.cat((features_no_age, age), dim=1)
+        
 
         z = self._manager.encode(batch.to(self._device)).detach()
 
@@ -773,10 +809,21 @@ class Tester:
 
         """
 
+        storage_path = os.path.join(self._manager._precomputed_storage_path, 'normalise_age.pkl')
+        with open(storage_path, 'rb') as file:
+            age_train_mean, age_train_std = \
+                pickle.load(file)
+        age_latent_ranges = self._config['testing']['age_latent_changing']
+        age_latent_ranges_original = age_latent_ranges.copy()
+        for i in range(len(age_latent_ranges)):
+            age_latent_ranges[i] = (age_latent_ranges[i] - age_train_mean) / age_train_std
+
         batch = next(iter(data_loader))
 
         if self._config['data']['swap_features']:
-                batch = batch.x[self._manager.batch_diagonal_idx, ::]        
+            batch = batch.x[self._manager.batch_diagonal_idx, ::] 
+        else:
+            batch = batch.x
 
         z = self.get_z(batch)
 
@@ -786,14 +833,7 @@ class Tester:
 
         error_scale = 10
 
-        storage_path = os.path.join(self._manager._precomputed_storage_path, 'normalise_age.pkl')
-        with open(storage_path, 'rb') as file:
-            age_train_mean, age_train_std = \
-                pickle.load(file)
-        age_latent_ranges = self._config['testing']['age_latent_changing']
-        age_latent_ranges_original = age_latent_ranges.copy()
-        for i in range(len(age_latent_ranges)):
-            age_latent_ranges[i] = (age_latent_ranges[i] - age_train_mean) / age_train_std
+
         grid_nrows = len(age_latent_ranges)
 
         original_ages = []
@@ -913,6 +953,257 @@ class Tester:
 
         # ##################
 
+    def conditional_age_latent_changing(self, data_loader):
+
+        """
+        
+        This function generates an image of 4 subjects from a batch and changes the age latent to 5 differenet ages and displays them with their difference maps compared to the orginal mesh. 
+        A subjects goes through the encoder, the age latent is changed, then goes through the decoder. 
+
+        Output: image of a batch with 5 different ages & difference maps when compared to the:
+         - original
+         - previous
+         - first column
+
+        """
+
+        assert self._config['data']['swap_features'] == False
+
+        storage_path = os.path.join(self._manager._precomputed_storage_path, 'normalise_age.pkl')
+        with open(storage_path, 'rb') as file:
+            age_train_mean, age_train_std = \
+                pickle.load(file)
+            
+        age_latent_ranges = self._config['testing']['age_latent_changing']
+        # age_latent_ranges_original = age_latent_ranges.copy()
+        age_latent_ranges = (age_latent_ranges - age_train_mean) / age_train_std
+
+        batch_original = next(iter(data_loader))
+
+        gen_all = []
+        error_scale = 10
+
+        for i in range(len(age_latent_ranges)):
+
+            batch = batch_original.clone()
+            differences = []
+
+            # adding age condition to input data
+            if i == 0:
+                data = self.conditional_data(batch)
+            else:
+                batch.norm_age = torch.full((batch.norm_age.size(0), 1), age_latent_ranges[i], dtype=torch.float64)
+                data = self.conditional_data(batch)
+
+            # encode and generate z
+            z = self.get_z(data.x)
+
+            # # add age condition to z latent representation
+            # if i == 0:
+            #     z[:, -1] = batch.norm_age.view(-1)
+            # else:
+            #     batch.norm_age = torch.full(batch.norm_age.size(), age_latent_ranges[i], dtype=torch.float64)
+            #     z[:, -1] = batch.norm_age.view(-1)
+
+            # decode and generate output mesh
+            if i == 0:
+                gen_verts_gt = self._manager.generate(z.to(self._device))
+                if self._normalized_data:
+                    gen_verts_gt = self._unnormalize_verts(gen_verts_gt)
+                renderings = self._manager.render(gen_verts_gt).cpu()
+                gen_all.append(renderings.squeeze())
+
+                differences_from_gt = self._manager.compute_vertex_errors(gen_verts_gt, gen_verts_gt)
+                differences_renderings = self._manager.render(gen_verts_gt, differences_from_gt, error_max_scale=error_scale).cpu().detach()
+                differences.append(differences_renderings.squeeze())
+                gen_all.extend(differences)
+            
+            else:
+                gen_verts = self._manager.generate(z.to(self._device))
+                if self._normalized_data:
+                    gen_verts = self._unnormalize_verts(gen_verts)
+                renderings = self._manager.render(gen_verts).cpu()
+                gen_all.append(renderings.squeeze())
+
+                differences_from_gt = self._manager.compute_vertex_errors(gen_verts, gen_verts_gt)
+                differences_renderings = self._manager.render(gen_verts, differences_from_gt, error_max_scale=error_scale).cpu().detach()
+                differences.append(differences_renderings.squeeze())
+                gen_all.extend(differences)
+            
+
+        # grid_nrows = len(age_latent_ranges)
+        grid_nrows = 4
+
+        # difference from original 
+        stacked_frames = torch.stack(gen_all)
+        stacked_frames = stacked_frames.view(-1, *stacked_frames.shape[2:])
+        grid = make_grid(stacked_frames, padding=10, pad_value=1, nrow=grid_nrows)
+        save_image(grid, os.path.join(self._out_dir, 'test_change_age.png'))
+        # save_image(grid, os.path.join(self._out_dir, f'age_latent_changing_original_{age_latent_ranges_original}.png'))
+
+    def age_encoder_check(self, data_loader):
+
+        """
+        
+        This function calculates the mean absolute difference between the actual age and the age latent after being passed through the encoder once. This checks how well the encoder generates the correct age. 
+
+        Output: scatter plot of predicted age against ground truth age  
+        
+        """
+
+        storage_path = os.path.join(self._manager._precomputed_storage_path, 'normalise_age.pkl')
+
+        with open(storage_path, 'rb') as file:
+            age_train_mean, age_train_std = \
+                pickle.load(file)
+        
+        all_diff = []
+        age_original = []
+        age_predict = []
+        for data in tqdm.tqdm(data_loader):
+
+            if self._config['model']['conditional_vae']:
+                data = self.conditional_data(data)
+
+            batch = data.x
+            age = data.age.squeeze().tolist()
+            name = data.fname.squeeze().tolist()
+
+            if self._config['data']['swap_features']:
+                batch = batch[self._manager.batch_diagonal_idx, ::]
+
+            z = self._manager.encode(batch.to(self._device)).detach().cpu()
+
+            z_age = z[:, -1]
+            z_age = (z_age * age_train_std) + age_train_mean
+            z_age = z_age.squeeze().tolist()
+
+            age_diff = abs(torch.tensor(age) - torch.tensor(z_age))
+            age_diff = age_diff.squeeze().tolist()
+
+            dataset_remove = self._config['data']['dataset_remove']
+
+            for i in range(z.shape[0]):
+                if name[i] in dataset_remove:
+                    pass
+                else:
+                    age_predict.append(z_age[i])
+                    age_original.append(age[i])                    
+                    all_diff.append(age_diff[i])
+            
+        average_diff = np.mean(all_diff)
+
+        # plot graph of actual age against age latent from encoder
+
+        age_range = self._config['data']['dataset_age_range']
+
+        plt.clf()
+
+        plt.scatter(age_original, age_predict, color='blue')
+        plt.plot([0, 100], [0, 100], 'r--')
+
+        plt.title(f'Encoder accuracy of age latent ({age_range})')
+        plt.xlabel('Original age')
+        plt.ylabel('Predicted age')
+
+        plt.text(0.1, 0.9, f'Mean absolute difference = {round(average_diff,2)}', transform=plt.gca().transAxes)
+
+        plt.savefig(os.path.join(self._out_dir, f'age_encoder_check_{age_range}.png'))
+        plt.savefig(os.path.join(self._out_dir, f'age_encoder_check_{age_range}.svg'))
+
+        return average_diff
+
+    def age_prediction_encode_output(self, data_loader):
+
+        """
+        
+        This function encodes the subjects, changes the age latent to a random age, decodes, then encodes again and meaures if the second encoding can generate 
+        the same age that it was assigned to after the first encoding. If the encoder check test shows the encoder works well, this tests will show how well the decoder performs.
+
+        Output: two scatter plots. One for assigned age vs predicted age after second encoding and one for GT age vs predicted age after second encoding.
+        
+        """
+        age_actuals = []
+        age_latents = []
+        age_preds = []
+        names = []
+
+        for batch in tqdm.tqdm(data_loader):
+
+            if self._config['data']['swap_features']:
+                x = batch.x[self._manager.batch_diagonal_idx, ::]   
+            else:
+                x = batch.x
+
+            age = batch.age 
+            name = batch.fname
+
+            z = self.get_z(x)
+            
+            storage_path = os.path.join(self._manager._precomputed_storage_path, 'normalise_age.pkl')
+            with open(storage_path, 'rb') as file:
+                age_train_mean, age_train_std = \
+                    pickle.load(file)
+                
+            which_data_remove = self._config['data']['dataset_remove']
+            age_range = self._config['data']['dataset_age_range']
+            age_lower = int(age_range.split("-")[0])
+            age_upper = int(age_range.split("-")[1])
+
+            for i in tqdm.tqdm(range(z.shape[0])):
+                if name[i].item() in which_data_remove:
+                    pass
+                else:
+                    age_latent = random.randrange(age_lower, age_upper)
+                    age_latents.append(age_latent)
+                    age_latent_norm = (age_latent - age_train_mean) / age_train_std
+                    z[i, -1] = age_latent_norm
+
+            gen_verts = self._manager.generate(z.to(self._device))
+            z_2 = self._manager.encode(gen_verts.to(self._device)).detach().cpu()
+
+            for i in tqdm.tqdm(range(z.shape[0])):
+                if name[i].item() in which_data_remove:
+                    pass
+                else:
+                    age_pred = z_2[i][-1].item()
+                    age_pred = (age_pred * age_train_std) + age_train_mean
+                    age_preds.append(int(age_pred))
+                    age_actual = age[i].item()
+                    age_actuals.append(age_actual)
+                    names.append(name[i])
+                
+
+        average_pred_diff_latent_pred = np.mean(np.abs(np.array(age_latents) - np.array(age_preds)))
+        average_pred_diff_actual_pred = np.mean(np.abs(np.array(age_actuals) - np.array(age_preds)))
+
+        plt.clf()
+
+        plt.scatter(age_latents, age_preds, color='orange')
+        plt.plot([0, 100], [0, 100], 'r--')
+
+        plt.title(f'Decoder accuracy against random age ({age_range})')
+        plt.xlabel('Random assigned age')
+        plt.ylabel('Predicted age')
+
+        plt.text(0.1, 0.9, f'Mean absolute difference = {round(average_pred_diff_latent_pred, 2)}', transform=plt.gca().transAxes)
+
+        plt.savefig(os.path.join(self._out_dir, f'decoder_accuracy_random_{age_range}.png'))
+        plt.savefig(os.path.join(self._out_dir, f'decoder_accuracy_random_{age_range}.svg'))
+
+        plt.clf()
+
+        plt.scatter(age_actuals, age_preds, color='orange')
+        plt.plot([0, 100], [0, 100], 'r--')
+
+        plt.title(f'Decoder accuracy against random age original age ({age_range})')
+        plt.xlabel('Original age')
+        plt.ylabel('Predicted age')
+
+        plt.text(0.1, 0.9, f'Mean absolute difference = {round(average_pred_diff_actual_pred, 2)}', transform=plt.gca().transAxes)
+
+        plt.savefig(os.path.join(self._out_dir, f'decoder_accuracy_original_{age_range}.png'))
+        plt.savefig(os.path.join(self._out_dir, f'decoder_accuracy_original_{age_range}.svg'))
 
 
     @staticmethod
@@ -949,6 +1240,12 @@ if __name__ == '__main__':
         print("GPU not available, running on CPU")
     else:
         device = torch.device('cuda')
+    
+    if configurations['data']['age_disentanglement']:
+        configurations['model']['latent_size'] += configurations['model']['age_latent_size']
+
+    if configurations['model']['conditional_vae']:
+        configurations['model']['in_channels'] += 1
 
     manager = ModelManager(
         configurations=configurations, device=device,

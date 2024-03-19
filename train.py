@@ -49,6 +49,9 @@ if opts.generate_data:
 if config['data']['age_disentanglement']:
     config['model']['latent_size'] += config['model']['age_latent_size']
 
+if config['model']['conditional_vae']:
+    config['model']['in_channels'] += 1
+
 manager = ModelManager(
     configurations=config, device=device,
     precomputed_storage_path=config['data']['precomputed_path'])
