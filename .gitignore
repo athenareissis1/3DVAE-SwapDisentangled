@@ -26,3 +26,5 @@ precomputed_bodies/
 precomputed_cvpr/
 
 .vscode/
+
+preprocessing_data/

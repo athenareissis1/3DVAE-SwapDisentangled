@@ -162,8 +162,10 @@ class MeshDataset(Dataset):
         self._normalize = normalize
         self._template = template
 
+        self._data_type = root['dataset_type'].split("_", 1)[1]
+
         self._train_names, self._test_names, self._val_names = self.split_data(
-            os.path.join(precomputed_storage_path, 'data_split.json'))
+            os.path.join(precomputed_storage_path, f'data_split_{self._data_type}.json'))
 
         self._processed_files = [f + '.pt' for f in self.raw_file_names]
 
@@ -238,7 +240,7 @@ class MeshDataset(Dataset):
 
     def compute_mean_and_std(self):
         normalization_dict_path = os.path.join(
-            self._precomputed_storage_path, 'norm.pt')
+            self._precomputed_storage_path, f'norm_{self._data_type}.pt')
         try:
             normalization_dict = torch.load(normalization_dict_path)
         except FileNotFoundError:
@@ -290,12 +292,14 @@ class MeshInMemoryDataset(InMemoryDataset):
         if not os.path.isdir(precomputed_storage_path):
             os.mkdir(precomputed_storage_path)
 
+        self._data_type = root['dataset_type'].split("_", 1)[1]
+
         self._dataset_type = dataset_type
         self._normalize = normalize
         self._template = template
 
         self._train_names, self._test_names, self._val_names = self.split_data(
-            os.path.join(precomputed_storage_path, 'data_split.json'))
+            os.path.join(precomputed_storage_path, f'data_split_{self._data_type}.json'))
         
         if root['age_disentanglement']:
             self._age_metadata_path = root['dataset_metadata_path']
@@ -344,8 +348,9 @@ class MeshInMemoryDataset(InMemoryDataset):
         files = []
         for dirpath, _, fnames in os.walk(self._root):
             for f in fnames:
-                if f.endswith('.ply'):
-                    files.append(f[:-4])
+                if f.endswith('.obj'):
+                    # files.append(f[:-4])
+                    files.append(f)
         return files
 
     def split_data(self, data_split_list_path):
@@ -386,7 +391,7 @@ class MeshInMemoryDataset(InMemoryDataset):
 
     def compute_mean_and_std(self):
         normalization_dict_path = os.path.join(
-            self._precomputed_storage_path, 'norm.pt')
+            self._precomputed_storage_path, f'norm_{self._data_type}.pt')
         try:
             normalization_dict = torch.load(normalization_dict_path)
         except FileNotFoundError:
@@ -408,8 +413,12 @@ class MeshInMemoryDataset(InMemoryDataset):
         return normalization_dict
 
     def file_id(self, fname):
-        file_id = fname.split("_")[0].lstrip('0') 
-        file_id = torch.tensor(int(file_id))
+        if 'babies' in str(self._config_data['dataset_type']):
+            file_id = fname.replace("_", "").split('.', 1)[0]
+        else:
+            file_id = fname.split("_")[0].lstrip('0') 
+        
+        # file_id = torch.tensor(int(file_id))
 
         return file_id 
 
@@ -419,14 +428,17 @@ class MeshInMemoryDataset(InMemoryDataset):
         val_id = []
         test_id = []
         age_metadata = pd.read_csv(self._age_metadata_path, usecols=['id', 'age'])
-        storage_path = os.path.join(self._precomputed_storage_path, 'normalise_age.pkl')
+        storage_path = os.path.join(self._precomputed_storage_path, f'normalise_age_{self._data_type}.pkl')
 
         for i in range(len(self._train_names)):
-            train_id.append(np.int64(self.file_id(self._train_names[i])))
+            # train_id.append(np.int64(self.file_id(self._train_names[i])))
+            train_id.append(self.file_id(self._train_names[i]))
         for i in range(len(self._val_names)):
-            val_id.append(np.int64(self.file_id(self._val_names[i])))
+            # val_id.append(np.int64(self.file_id(self._val_names[i])))
+            val_id.append(self.file_id(self._val_names[i]))
         for i in range(len(self._test_names)):
-            test_id.append(np.int64(self.file_id(self._test_names[i])))
+            # test_id.append(np.int64(self.file_id(self._test_names[i])))
+            test_id.append(self.file_id(self._test_names[i]))
         
         try:
             with open(storage_path, 'rb') as file:
@@ -453,9 +465,15 @@ class MeshInMemoryDataset(InMemoryDataset):
         return age_metadata
 
     def age_data(self, fname):
-        file_id = np.int64(self.file_id(fname))
-        age = self._age_metadata.loc[self._age_metadata['id'] == file_id, 'age'].values[0]
-        norm_age = self._age_metadata.loc[self._age_metadata['id'] == file_id, 'norm_age'].values[0]
+        # file_id = np.int64(self.file_id(fname))
+        file_id = self.file_id(fname)
+        # age = self._age_metadata.loc[self._age_metadata['id'] == file_id, 'age'].values[0]
+        if file_id in self._age_metadata['id'].values:
+            age = self._age_metadata.loc[self._age_metadata['id'] == file_id, 'age'].values[0]
+            norm_age = self._age_metadata.loc[self._age_metadata['id'] == file_id, 'norm_age'].values[0]
+        else:
+            age = np.nan
+            norm_age = np.nan
 
         return age, norm_age
 

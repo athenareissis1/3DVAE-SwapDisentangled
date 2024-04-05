@@ -23,7 +23,7 @@ from evaluation_metrics import compute_all_metrics, jsd_between_point_cloud_sets
 
 class Tester:
     def __init__(self, model_manager, norm_dict,
-                 train_load, test_load, out_dir, config):
+                 train_load, val_load, test_load, out_dir, config):
     
         self._manager = model_manager
         self._manager.eval()
@@ -33,9 +33,11 @@ class Tester:
         self._out_dir = out_dir
         self._config = config
         self._train_loader = train_load
+        self._val_loader = val_load
         self._test_loader = test_load
         self._is_vae = self._manager.is_vae
         self.latent_stats = self.compute_latent_stats(train_load)
+        self._data_type = config['data']['dataset_type'].split("_", 1)[1]
 
         self.coma_landmarks = [
             1337, 1344, 1163, 878, 3632, 2496, 2428, 2291, 2747,
@@ -75,13 +77,14 @@ class Tester:
         # with open(outfile_path, 'w') as outfile:
         #     json.dump(metrics, outfile)
 
-        # TEST TO RUN
+        # # TEST TO RUN
         self.set_renderings_size(512)
         self.set_rendering_background_color([1, 1, 1])
         self.per_variable_range_experiments(use_z_stats=False)
         self.random_generation_and_rendering(n_samples=16)
 
         self.age_encoder_check(self._test_loader)
+        self.dataset_age_split(self._train_loader, self._val_loader, self._test_loader)
 
         if self._config['model']['conditional_vae']:
             self.conditional_age_latent_changing(self._test_loader)
@@ -678,7 +681,7 @@ class Tester:
             sphere.export(os.path.join(out_mesh_dir, f'selected_{i}.ply'))
 
     def interpolate(self):
-        with open(os.path.join('precomputed', 'data_split.json'), 'r') as fp:
+        with open(os.path.join('precomputed', f'data_split_{self._data_type}.json'), 'r') as fp:
             data = json.load(fp)
         test_list = data['test']
         meshes_root = self._test_loader.dataset.root
@@ -809,7 +812,7 @@ class Tester:
 
         """
 
-        storage_path = os.path.join(self._manager._precomputed_storage_path, 'normalise_age.pkl')
+        storage_path = os.path.join(self._manager._precomputed_storage_path, f'normalise_age_{self._data_type}.pkl')
         with open(storage_path, 'rb') as file:
             age_train_mean, age_train_std = \
                 pickle.load(file)
@@ -969,7 +972,7 @@ class Tester:
 
         assert self._config['data']['swap_features'] == False
 
-        storage_path = os.path.join(self._manager._precomputed_storage_path, 'normalise_age.pkl')
+        storage_path = os.path.join(self._manager._precomputed_storage_path, f'normalise_age_{self._data_type}.pkl')
         with open(storage_path, 'rb') as file:
             age_train_mean, age_train_std = \
                 pickle.load(file)
@@ -1051,7 +1054,7 @@ class Tester:
         
         """
 
-        storage_path = os.path.join(self._manager._precomputed_storage_path, 'normalise_age.pkl')
+        storage_path = os.path.join(self._manager._precomputed_storage_path, f'normalise_age_{self._data_type}.pkl')
 
         with open(storage_path, 'rb') as file:
             age_train_mean, age_train_std = \
@@ -1067,7 +1070,8 @@ class Tester:
 
             batch = data.x
             age = data.age.squeeze().tolist()
-            name = data.fname.squeeze().tolist()
+            # name = data.fname.squeeze().tolist()
+            name = data.fname
 
             if self._config['data']['swap_features']:
                 batch = batch[self._manager.batch_diagonal_idx, ::]
@@ -1096,11 +1100,13 @@ class Tester:
         # plot graph of actual age against age latent from encoder
 
         age_range = self._config['data']['dataset_age_range']
+        min_age, max_age = map(int, age_range.split('-'))
 
         plt.clf()
 
         plt.scatter(age_original, age_predict, color='blue')
-        plt.plot([0, 100], [0, 100], 'r--')
+        # plt.plot([0, 100], [0, 100], 'r--')
+        plt.plot([min_age, max_age], [min_age, max_age], 'r--')
 
         plt.title(f'Encoder accuracy of age latent ({age_range})')
         plt.xlabel('Original age')
@@ -1140,18 +1146,19 @@ class Tester:
 
             z = self.get_z(x)
             
-            storage_path = os.path.join(self._manager._precomputed_storage_path, 'normalise_age.pkl')
+            storage_path = os.path.join(self._manager._precomputed_storage_path, f'normalise_age_{self._data_type}.pkl')
             with open(storage_path, 'rb') as file:
                 age_train_mean, age_train_std = \
                     pickle.load(file)
                 
             which_data_remove = self._config['data']['dataset_remove']
             age_range = self._config['data']['dataset_age_range']
-            age_lower = int(age_range.split("-")[0])
-            age_upper = int(age_range.split("-")[1])
+            # age_lower = int(age_range.split("-")[0])
+            # age_upper = int(age_range.split("-")[1])
+            age_lower, age_upper = map(int, age_range.split('-'))
 
             for i in tqdm.tqdm(range(z.shape[0])):
-                if name[i].item() in which_data_remove:
+                if name[i] in which_data_remove:
                     pass
                 else:
                     age_latent = random.randrange(age_lower, age_upper)
@@ -1163,7 +1170,7 @@ class Tester:
             z_2 = self._manager.encode(gen_verts.to(self._device)).detach().cpu()
 
             for i in tqdm.tqdm(range(z.shape[0])):
-                if name[i].item() in which_data_remove:
+                if name[i] in which_data_remove:
                     pass
                 else:
                     age_pred = z_2[i][-1].item()
@@ -1180,7 +1187,7 @@ class Tester:
         plt.clf()
 
         plt.scatter(age_latents, age_preds, color='orange')
-        plt.plot([0, 100], [0, 100], 'r--')
+        plt.plot([age_lower, age_upper], [age_lower, age_upper], 'r--')
 
         plt.title(f'Decoder accuracy against random age ({age_range})')
         plt.xlabel('Random assigned age')
@@ -1194,7 +1201,7 @@ class Tester:
         plt.clf()
 
         plt.scatter(age_actuals, age_preds, color='orange')
-        plt.plot([0, 100], [0, 100], 'r--')
+        plt.plot([age_lower, age_upper], [age_lower, age_upper], 'r--')
 
         plt.title(f'Decoder accuracy against random age original age ({age_range})')
         plt.xlabel('Original age')
@@ -1205,6 +1212,133 @@ class Tester:
         plt.savefig(os.path.join(self._out_dir, f'decoder_accuracy_original_{age_range}.png'))
         plt.savefig(os.path.join(self._out_dir, f'decoder_accuracy_original_{age_range}.svg'))
 
+    def dataset_age_split(self, train_loader, val_loader, test_loader):
+
+        """
+        
+        This function calculates how many data subjects there are for each age range group to understand it's distribution. 
+        
+        It saves the results in a .txt tile.  
+
+        Output: two graphs: distribution of age & age split for train, val and test sets
+        
+        """
+
+        # create lists with all ages and split
+
+        precomputed_storage_path = self._config['data']['precomputed_path']
+
+        data = [train_loader, val_loader, test_loader]
+        data_name = ['train', 'val', 'test']
+        data_type_list = []
+        ages_list = []
+
+        storage_path = os.path.join(precomputed_storage_path, f'normalise_age_{self._data_type}.pkl')
+        with open(storage_path, 'rb') as file:
+            age_train_mean, age_train_std = \
+                pickle.load(file)
+
+        for i in range(3):
+            for batch in tqdm.tqdm(data[i]):  
+                for j in range(batch.age.size()[0]):
+
+                    # age = (batch.age[j].item() * age_train_std) + age_train_mean
+                    age = batch.age[j].item()
+                    if age == 0:
+                        age = 0.001
+                    else:
+                        age = age-0.001
+                    ages_list.append(age)
+                    data_type_list.append(data_name[i])
+        
+        total_subjects = len(ages_list)
+
+        # create age distribution graph of all data 
+
+        age_range = self._config['data']['dataset_age_range']
+        age_lower, age_upper = map(int, age_range.split('-'))
+
+        storage_path = os.path.join(precomputed_storage_path, f'{self._data_type}_age_distribution_{age_range}.png')
+
+        if not os.path.exists(storage_path):
+
+            # bin_edges = list(range(0, 91, 10))
+            # bin_labels = ["0-10", "11-20", "21-30", "31-40", "41-50", "51-60", "61-70", "71-80", "81-90"]
+        
+            bin_edges = np.linspace(age_lower, age_upper, 10)
+            bin_labels = [f"{int(bin_edges[i])}-{int(bin_edges[i+1])}" for i in range(len(bin_edges)-1)]
+            mid_points = [(bin_edges[i] + bin_edges[i+1]) / 2 for i in range(len(bin_edges)-1)]
+
+            # Plot the histogram - 0-2 mean up to and including 2 years old for example
+            plt.figure(figsize=(10,6))
+            n, bins, patches = plt.hist(ages_list, bins=bin_edges, alpha=0.7, edgecolor="k")
+            # plt.hist(ages_list, bins=bin_edges, alpha=0.7)
+            plt.xticks(mid_points, bin_labels)
+            plt.legend(loc='upper right')
+            plt.xlabel("Age Ranges")
+            plt.ylabel("Frequency")
+            plt.title("Age Distribution")
+
+            # Annotate the bars with the frequency count and percentage
+            for i in range(len(n)):
+                plt.text(mid_points[i], n[i] + 5, f"{int(n[i])}\n({(n[i] / len(ages_list)) * 100:.1f}%)", 
+                        ha='center', va='bottom', color='black', fontsize=9)
+
+            plt.annotate(f'Total number of subjects: {total_subjects}', xy=(0.75, 0.95), xycoords='axes fraction')
+            plt.tight_layout()
+            plt.savefig(storage_path)
+            plt.clf()
+
+        else:
+            print(f"{storage_path} already exists.")
+
+
+        # create age split for train, val & test graph if it does not already exist 
+
+        storage_path = os.path.join(precomputed_storage_path, f'{self._data_type}_data_split_{age_range}.png')
+
+        if not os.path.exists(storage_path):
+
+            # Initialize separate lists for train, test, and val ages
+            train_ages = []
+            test_ages = []
+            val_ages = []
+
+            # Iterate over data_types and ages simultaneously
+            for data_type, age in zip(data_type_list, ages_list):
+                if age == 0.001:
+                    age = 0
+                else: 
+                    age += 0.001
+
+                if data_type == 'train':
+                    train_ages.append(age)
+                elif data_type == 'test':
+                    test_ages.append(age)
+                elif data_type == 'val':
+                    val_ages.append(age)
+
+            plt.clf()
+
+            # Plotting
+            plt.figure(figsize=(10, 6))
+            plt.hist(train_ages, bins=20, alpha=0.5, label='Train')
+            plt.hist(test_ages, bins=20, alpha=0.5, label='Test')
+            plt.hist(val_ages, bins=20, alpha=0.5, label='Validation')
+            plt.legend(loc='upper right')
+            plt.xlabel('Age')
+            plt.ylabel('Count')
+            plt.title('Age distribution in Train, Test and Validation sets')
+
+            # Annotate min and max for each set
+            plt.annotate(f'Train min: {min(train_ages)}, max: {max(train_ages)}, count: {len(train_ages)}', xy=(0.5, 0.95), xycoords='axes fraction')
+            plt.annotate(f'Validation min: {min(val_ages)}, max: {max(val_ages)}, count: {len(val_ages)}', xy=(0.5, 0.85), xycoords='axes fraction')
+            plt.annotate(f'Test min: {min(test_ages)}, max: {max(test_ages)}, count: {len(test_ages)}', xy=(0.5, 0.90), xycoords='axes fraction')
+
+            plt.savefig(storage_path)
+
+        else:
+            print(f"{storage_path} already exists.")
 
     @staticmethod
     def vector_linspace(start, finish, steps):
@@ -1252,10 +1386,10 @@ if __name__ == '__main__':
         precomputed_storage_path=configurations['data']['precomputed_path'])
     manager.resume(checkpoint_dir)
 
-    train_loader, _, test_loader, normalization_dict = \
+    train_loader, val_loader, test_loader, normalization_dict = \
         get_data_loaders(configurations, manager.template)
 
-    tester = Tester(manager, normalization_dict, train_loader, test_loader,
+    tester = Tester(manager, normalization_dict, train_loader, val_loader, test_loader,
                     output_directory, configurations)
 
     tester()

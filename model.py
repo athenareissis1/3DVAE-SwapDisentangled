@@ -197,11 +197,17 @@ class Model(nn.Module):
             
         return z
 
-    def forward(self, x, age):
+    def forward(self, data):
+
+
+        x = data.x
 
         # if self.conditional_vae is true, then concatinate the age onto the x data before passing it into the model
         if self.conditional_vae:
             assert self.swap_feature == False
+            assert self.age_disentanglement == True
+            
+            age = data.norm_age
 
             # Expand and repeat ages to match the face_meshes shape
             age_expanded = age.unsqueeze(-1).expand(-1, x.shape[1], 1)

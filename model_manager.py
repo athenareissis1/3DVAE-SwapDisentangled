@@ -38,6 +38,7 @@ class ModelManager(torch.nn.Module):
         self._normalized_data = configurations['data']['normalize_data']
         self._age_disentanglement = configurations['data']['age_disentanglement']
         self._conditional_vae = configurations['model']['conditional_vae']
+        self._data_type = configurations['data']['dataset_type'].split("_", 1)[1]
 
         self.to_mm_const = configurations['data']['to_mm_constant']
         self.device = device
@@ -137,7 +138,7 @@ class ModelManager(torch.nn.Module):
 
     def _precompute_transformations(self):
         storage_path = os.path.join(self._precomputed_storage_path,
-                                    'transforms.pkl')
+                                    f'transforms_{self._data_type}.pkl')
         try:
             with open(storage_path, 'rb') as file:
                 low_res_templates, down_transforms, up_transforms = \
@@ -172,7 +173,7 @@ class ModelManager(torch.nn.Module):
 
     def _precompute_spirals(self, templates):
         storage_path = os.path.join(self._precomputed_storage_path,
-                                    'spirals.pkl')
+                                    f'spirals_{self._data_type}.pkl')
         try:
             with open(storage_path, 'rb') as file:
                 spiral_indices_list = pickle.load(file)
@@ -202,7 +203,8 @@ class ModelManager(torch.nn.Module):
                 for i, k in enumerate(region_names)}
 
     def forward(self, data):
-        return self._net(data.x, data.norm_age)
+        # return self._net(data.x, data.norm_age)
+        return self._net(data)
 
     @torch.no_grad()
     def encode(self, data):
@@ -514,7 +516,10 @@ class ModelManager(torch.nn.Module):
             faces=template.face.t().expand(batch_size, -1, -1),
             textures=textures)
         
-        cam_light_dist = 0.05
+        if "lyhm" in self._data_type:
+            cam_light_dist = 0.05
+        else: 
+            cam_light_dist = 2.4
 
         rotation, translation = look_at_view_transform(
             dist=cam_light_dist, elev=0, azim=15)
