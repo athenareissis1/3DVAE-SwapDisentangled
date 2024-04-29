@@ -13,7 +13,7 @@ data:
   number_of_meshes: 10000                                                       # for data generation, > 0 if you want to generate data
   number_of_workers: 8
   swap_features: True                                                           # if True, the resulting batch size will be batch_size^2
-  age_disentanglement: False                                                     # if True, an extra feature is added to the latent vector that represents age & age related losses are added
+  age_disentanglement: True                                                     # if True, an extra feature is added to the latent vector that represents age & age related losses are added
   
 optimization:
   epochs: 600
@@ -22,7 +22,7 @@ optimization:
   weight_decay: 0
 
   laplacian_weight: 0.5   
-  kl_weight: 1e-3 #1e-4                                                               # if 0, AE or RAE architecture is used                                  
+  kl_weight: 1e-4                                                               # if 0, AE or RAE architecture is used                                  
 
   gaussian_weight: 0                                                            # alternative to KL divergence
   gaussian_mean_weight: 0
@@ -44,7 +44,7 @@ optimization:
 
   factor_weight: 0                                                              # if 0, no factor VAE
 
-  age_weight: 0                                                                  # if 0, no age loss is used
+  age_weight: 1.5                                                                  # if 0, no age loss is used
 
 model:
   sampling:

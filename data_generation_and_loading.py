@@ -13,6 +13,7 @@ from torch.utils.data.dataloader import default_collate
 from torch_geometric.data import Dataset, InMemoryDataset, Data
 
 from swap_batch_transform import SwapFeatures
+from sklearn.model_selection import train_test_split
 
 
 class DataGenerator:
@@ -206,30 +207,30 @@ class MeshDataset(Dataset):
                     files.append(f[:-4])
         return files
 
-    def split_data(self, data_split_list_path):
-        try:
-            with open(data_split_list_path, 'r') as fp:
-                data = json.load(fp)
-            train_list = data['train']
-            test_list = data['test']
-            val_list = data['val']
-        except FileNotFoundError:
-            all_file_names = self.find_filenames()
-            all_file_names.sort()
+    # def split_data(self, data_split_list_path):
+    #     try:
+    #         with open(data_split_list_path, 'r') as fp:
+    #             data = json.load(fp)
+    #         train_list = data['train']
+    #         test_list = data['test']
+    #         val_list = data['val']
+    #     except FileNotFoundError:
+    #         all_file_names = self.find_filenames()
+    #         all_file_names.sort()
 
-            train_list, test_list, val_list = [], [], []
-            for i, fname in enumerate(all_file_names):
-                if i % 100 <= 5:
-                    test_list.append(fname)
-                elif i % 100 <= 10:
-                    val_list.append(fname)
-                else:
-                    train_list.append(fname)
+    #         train_list, test_list, val_list = [], [], []
+    #         for i, fname in enumerate(all_file_names):
+    #             if i % 100 <= 15: #5:
+    #                 test_list.append(fname)
+    #             elif i % 100 <= 30: #10:
+    #                 val_list.append(fname)
+    #             else:
+    #                 train_list.append(fname)
 
-            data = {'train': train_list, 'test': test_list, 'val': val_list}
-            with open(data_split_list_path, 'w') as fp:
-                json.dump(data, fp)
-        return train_list, test_list, val_list
+    #         data = {'train': train_list, 'test': test_list, 'val': val_list}
+    #         with open(data_split_list_path, 'w') as fp:
+    #             json.dump(data, fp)
+    #     return train_list, test_list, val_list
 
     def load_mesh(self, filename):
         mesh_path = os.path.join(self._root, filename)
@@ -260,6 +261,13 @@ class MeshDataset(Dataset):
             normalization_dict = {'mean': mean, 'std': std}
             torch.save(normalization_dict, normalization_dict_path)
         return normalization_dict
+
+    def save_mean_mesh(self):
+        first_mesh_path = os.path.join(self._root, self._train_names[0])
+        first_mesh = trimesh.load_mesh(first_mesh_path, process=False)
+        first_mesh.vertices = self.mean.detach().cpu().numpy()
+        first_mesh.export(
+            os.path.join(self._precomputed_storage_path, 'mean.obj'))
 
     def process(self):
         for i, fname in tqdm.tqdm(enumerate(self.raw_file_names)):
@@ -302,7 +310,6 @@ class MeshInMemoryDataset(InMemoryDataset):
             os.path.join(precomputed_storage_path, f'data_split_{self._data_type}.json'))
         
         if root['age_disentanglement']:
-            self._age_metadata_path = root['dataset_metadata_path']
             self._age_metadata = self.normalise_age()
 
         self._processed_files = [f + '.pt' for f in self.raw_file_names]
@@ -311,6 +318,7 @@ class MeshInMemoryDataset(InMemoryDataset):
         self._normalization_dict = normalization_dict
         self.mean = normalization_dict['mean']
         self.std = normalization_dict['std']
+        self.save_mean_mesh()
 
         # this is where the data gets processed
         super(MeshInMemoryDataset, self).__init__(
@@ -352,6 +360,16 @@ class MeshInMemoryDataset(InMemoryDataset):
                     # files.append(f[:-4])
                     files.append(f)
         return files
+    
+    def file_id(self, fname):
+        if 'babies' in str(self._config_data['dataset_type']):
+            file_id = fname.replace("_", "").split('.', 1)[0]
+        else:
+            file_id = fname.split("_")[0].lstrip('0') 
+        
+        # file_id = torch.tensor(int(file_id))
+
+        return file_id 
 
     def split_data(self, data_split_list_path):
         try:
@@ -364,14 +382,60 @@ class MeshInMemoryDataset(InMemoryDataset):
             all_file_names = self.find_filenames()
             all_file_names.sort()
 
-            train_list, test_list, val_list = [], [], []
-            for i, fname in enumerate(all_file_names):
-                if i % 100 <= 5:
-                    test_list.append(fname)
-                elif i % 100 <= 10:
-                    val_list.append(fname)
+            if self._config_data['age_disentanglement']:
+                # using train_test_split from sklearn
+                age_metadata = pd.read_csv(self._config_data['dataset_metadata_path'], usecols=['id', 'AgeYears'])
+                all_ages = []
+                for i, fname in enumerate(all_file_names):
+                    file_id = self.file_id(fname)
+                    if file_id in age_metadata['id'].values:
+                        age = age_metadata.loc[age_metadata['id'] == file_id, 'AgeYears'].values[0]
+                        all_ages.append(age)
+                    else:
+                        all_file_names.remove(fname)
+
+                # Split the data into train and temporary test sets
+                train_list, temp_test_list, train_ages, temp_test_ages = train_test_split(all_file_names, all_ages, test_size=0.15, stratify=all_ages, random_state=42)
+                # Check the number of unique classes in temp_test_ages
+                num_classes = len(set(temp_test_ages))
+
+                # If the number of unique classes is greater than the size of the temporary test set, do not stratify the split
+                if num_classes > len(temp_test_list):
+                    test_list, val_list = train_test_split(temp_test_list, test_size=0.33, random_state=42)
                 else:
-                    train_list.append(fname)
+                    test_list, val_list, _, _ = train_test_split(temp_test_list, temp_test_ages, test_size=0.55, stratify=temp_test_ages, random_state=42)
+                    
+
+            # age ordering first 
+            #     age_metadata = pd.read_csv(self._config_data['dataset_metadata_path'], usecols=['id', 'AgeYears'])
+
+            #     fname_age_dict = {}
+
+            #     for i, fname in enumerate(all_file_names):
+            #         file_id = self.file_id(fname)
+            #         if file_id in age_metadata['id'].values:
+            #             # Get the age associated with the file_id 
+            #             age = age_metadata.loc[age_metadata['id'] == file_id, 'AgeYears'].values[0]
+            #             # Add the fname and age to the dictionary
+            #             fname_age_dict[fname] = age
+            #         else:
+            #             all_file_names.remove(fname)
+
+            #     # Sort fname_age_dict by age
+            #     sorted_fname_age_dict = dict(sorted(fname_age_dict.items(), key=lambda item: item[1]))    
+
+            #     # Replace all_file_names with the keys from sorted_fname_age_dict
+            #     all_file_names = list(sorted_fname_age_dict.keys())
+            
+            # train_list, test_list, val_list = [], [], []
+            # for i, fname in enumerate(all_file_names):
+            #     if i % 100 <= 5:
+            #         test_list.append(fname)
+            #     elif i % 100 <= 10:
+            #         val_list.append(fname)
+            #     else:
+            #         train_list.append(fname)
+
 
             data = {'train': train_list, 'test': test_list, 'val': val_list}
             with open(data_split_list_path, 'w') as fp:
@@ -411,23 +475,33 @@ class MeshInMemoryDataset(InMemoryDataset):
             normalization_dict = {'mean': mean, 'std': std}
             torch.save(normalization_dict, normalization_dict_path)
         return normalization_dict
-
-    def file_id(self, fname):
-        if 'babies' in str(self._config_data['dataset_type']):
-            file_id = fname.replace("_", "").split('.', 1)[0]
+    
+    def save_mean_mesh(self):
+        first_mesh_path = os.path.join(self._root, self._train_names[0])
+        first_mesh = trimesh.load_mesh(first_mesh_path, process=False)
+        first_mesh.vertices = self.mean.detach().cpu().numpy()
+        first_mesh.export(
+            os.path.join(self._precomputed_storage_path, 'mean.obj'))
+    
+    def age_data(self, fname):
+        # file_id = np.int64(self.file_id(fname))
+        file_id = self.file_id(fname)
+        # age = self._age_metadata.loc[self._age_metadata['id'] == file_id, 'age'].values[0]
+        if file_id in self._age_metadata['id'].values:
+            age = self._age_metadata.loc[self._age_metadata['id'] == file_id, 'age'].values[0]
+            norm_age = self._age_metadata.loc[self._age_metadata['id'] == file_id, 'norm_age'].values[0]
         else:
-            file_id = fname.split("_")[0].lstrip('0') 
-        
-        # file_id = torch.tensor(int(file_id))
+            age = np.nan
+            norm_age = np.nan
 
-        return file_id 
+        return age, norm_age
 
     def normalise_age(self):
 
         train_id = []
         val_id = []
         test_id = []
-        age_metadata = pd.read_csv(self._age_metadata_path, usecols=['id', 'age'])
+        age_metadata = pd.read_csv(self._config_data['dataset_metadata_path'], usecols=['id', 'age'])
         storage_path = os.path.join(self._precomputed_storage_path, f'normalise_age_{self._data_type}.pkl')
 
         for i in range(len(self._train_names)):
@@ -463,19 +537,6 @@ class MeshInMemoryDataset(InMemoryDataset):
         age_metadata['norm_age'] = (age_metadata['age'] - age_train_mean) / age_train_std
                 
         return age_metadata
-
-    def age_data(self, fname):
-        # file_id = np.int64(self.file_id(fname))
-        file_id = self.file_id(fname)
-        # age = self._age_metadata.loc[self._age_metadata['id'] == file_id, 'age'].values[0]
-        if file_id in self._age_metadata['id'].values:
-            age = self._age_metadata.loc[self._age_metadata['id'] == file_id, 'age'].values[0]
-            norm_age = self._age_metadata.loc[self._age_metadata['id'] == file_id, 'norm_age'].values[0]
-        else:
-            age = np.nan
-            norm_age = np.nan
-
-        return age, norm_age
 
     def _process_set(self, files_list):
         dataset = []

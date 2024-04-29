@@ -18,6 +18,9 @@ from pytorch3d.loss.point_mesh_distance import point_face_distance
 from pytorch3d.loss.chamfer import _handle_pointcloud_input
 from pytorch3d.ops.knn import knn_points
 
+from sklearn.neural_network import MLPRegressor
+from sklearn.preprocessing import StandardScaler
+
 from evaluation_metrics import compute_all_metrics, jsd_between_point_cloud_sets
 
 
@@ -77,20 +80,22 @@ class Tester:
         # with open(outfile_path, 'w') as outfile:
         #     json.dump(metrics, outfile)
 
-        # # TEST TO RUN
+        # TEST TO RUN (run all on val set then once model is finalised move to test set)
         self.set_renderings_size(512)
         self.set_rendering_background_color([1, 1, 1])
         self.per_variable_range_experiments(use_z_stats=False)
         self.random_generation_and_rendering(n_samples=16)
 
-        self.age_encoder_check(self._test_loader)
-        self.dataset_age_split(self._train_loader, self._val_loader, self._test_loader)
+        if self._config['data']['age_disentanglement']:
+            self.age_encoder_check(self._train_loader, self._val_loader)
+            self.dataset_age_split(self._train_loader, self._val_loader, self._test_loader)
+            self.age_prediction_MLP(self._train_loader, self._val_loader)
 
-        if self._config['model']['conditional_vae']:
-            self.conditional_age_latent_changing(self._test_loader)
-        else:
-            self.age_latent_changing(self._test_loader)
-            self.age_prediction_encode_output(self._test_loader)
+            if self._config['model']['conditional_vae']:
+                self.conditional_age_latent_changing(self._val_loader)
+            else:
+                self.age_latent_changing(self._val_loader)
+                self.age_prediction_encode_output(self._train_loader, self._val_loader)
             
 
     def conditional_data(self, data):
@@ -161,11 +166,18 @@ class Tester:
 
     def per_variable_range_experiments(self, z_range_multiplier=1,
                                        use_z_stats=True):
-        if self._is_vae and not use_z_stats:
+        if self._is_vae and not use_z_stats and not self._config['data']['age_disentanglement']:
             latent_size = self._manager.model_latent_size
             z_means = torch.zeros(latent_size)
             z_mins = -3 * z_range_multiplier * torch.ones(latent_size)
             z_maxs = 3 * z_range_multiplier * torch.ones(latent_size)
+        elif self._is_vae and not use_z_stats and self._config['data']['age_disentanglement']:
+            latent_size = self._manager.model_latent_size   
+            z_means = torch.zeros(latent_size)
+            z_mins = -3 * z_range_multiplier * torch.ones(latent_size)
+            z_maxs = 3 * z_range_multiplier * torch.ones(latent_size)
+            z_mins[-1] = self.latent_stats['mins'][-1] * z_range_multiplier
+            z_maxs[-1] = self.latent_stats['maxs'][-1] * z_range_multiplier
         else:
             z_means = self.latent_stats['means']
             z_mins = self.latent_stats['mins'] * z_range_multiplier
@@ -780,19 +792,9 @@ class Tester:
 
         """
         
-        This function computes z depending on if the extra linear layers have been added to model or not 
+        This function computes z
 
         """
-        
-        # if extra_mlp_layers == False:
-        #     z = self._manager.encode(batch.to(self._device)).detach()
-        # else:
-        #     mu = self._manager.encode(batch.to(self._device)).detach()
-        #     features = mu[:, :-1]
-        #     age = mu[:, -1].unsqueeze(1)
-        #     features_no_age = self._manager._net.mlp_feature_layers(features)
-        #     z = torch.cat((features_no_age, age), dim=1)
-        
 
         z = self._manager.encode(batch.to(self._device)).detach()
 
@@ -1044,7 +1046,7 @@ class Tester:
         save_image(grid, os.path.join(self._out_dir, 'test_change_age.png'))
         # save_image(grid, os.path.join(self._out_dir, f'age_latent_changing_original_{age_latent_ranges_original}.png'))
 
-    def age_encoder_check(self, data_loader):
+    def age_encoder_check(self, train_loader, test_loader):
 
         """
         
@@ -1059,43 +1061,61 @@ class Tester:
         with open(storage_path, 'rb') as file:
             age_train_mean, age_train_std = \
                 pickle.load(file)
+
+        for j in range(2):
+
+            if j == 0:
+                data_loader = train_loader
+            else:
+                data_loader = test_loader
         
-        all_diff = []
-        age_original = []
-        age_predict = []
-        for data in tqdm.tqdm(data_loader):
+            all_diff = []
+            age_original = []
+            age_predict = []
 
-            if self._config['model']['conditional_vae']:
-                data = self.conditional_data(data)
 
-            batch = data.x
-            age = data.age.squeeze().tolist()
-            # name = data.fname.squeeze().tolist()
-            name = data.fname
+            for data in tqdm.tqdm(data_loader):
 
-            if self._config['data']['swap_features']:
-                batch = batch[self._manager.batch_diagonal_idx, ::]
+                if self._config['model']['conditional_vae']:
+                    data = self.conditional_data(data)
 
-            z = self._manager.encode(batch.to(self._device)).detach().cpu()
+                batch = data.x
+                age = data.age.squeeze().tolist()
+                # name = data.fname.squeeze().tolist()
+                name = data.fname
 
-            z_age = z[:, -1]
-            z_age = (z_age * age_train_std) + age_train_mean
-            z_age = z_age.squeeze().tolist()
+                if self._config['data']['swap_features']:
+                    batch = batch[self._manager.batch_diagonal_idx, ::]
 
-            age_diff = abs(torch.tensor(age) - torch.tensor(z_age))
-            age_diff = age_diff.squeeze().tolist()
+                z = self._manager.encode(batch.to(self._device)).detach().cpu()
 
-            dataset_remove = self._config['data']['dataset_remove']
+                z_age = z[:, -1]
+                z_age = (z_age * age_train_std) + age_train_mean
+                z_age = z_age.squeeze().tolist()
 
-            for i in range(z.shape[0]):
-                if name[i] in dataset_remove:
-                    pass
-                else:
-                    age_predict.append(z_age[i])
-                    age_original.append(age[i])                    
-                    all_diff.append(age_diff[i])
-            
-        average_diff = np.mean(all_diff)
+                age_diff = abs(torch.tensor(age) - torch.tensor(z_age))
+                age_diff = age_diff.squeeze().tolist()
+
+                dataset_remove = self._config['data']['dataset_remove']
+
+                for i in range(z.shape[0]):
+                    if name[i] in dataset_remove:
+                        pass
+                    else:
+                        age_predict.append(z_age[i])
+                        age_original.append(age[i])                    
+                        all_diff.append(age_diff[i])
+                
+            average_diff = np.mean(all_diff)
+
+            if j == 0:
+                train_age_original = age_original
+                train_age_predict = age_predict
+                train_average_diff = average_diff
+            else:
+                test_age_original = age_original
+                test_age_predict = age_predict
+                test_average_diff = average_diff
 
         # plot graph of actual age against age latent from encoder
 
@@ -1104,7 +1124,8 @@ class Tester:
 
         plt.clf()
 
-        plt.scatter(age_original, age_predict, color='blue')
+        plt.scatter(train_age_original, train_age_predict, color='yellow', marker='x', label='Train')
+        plt.scatter(test_age_original, test_age_predict, color='blue', label='Test')
         # plt.plot([0, 100], [0, 100], 'r--')
         plt.plot([min_age, max_age], [min_age, max_age], 'r--')
 
@@ -1112,102 +1133,129 @@ class Tester:
         plt.xlabel('Original age')
         plt.ylabel('Predicted age')
 
-        plt.text(0.1, 0.9, f'Mean absolute difference = {round(average_diff,2)}', transform=plt.gca().transAxes)
+        plt.text(0.1, 0.9, f'Mean absolute difference (train) = {round(train_average_diff,2)}', transform=plt.gca().transAxes)
+        plt.text(0.1, 0.85, f'Mean absolute difference (test) = {round(test_average_diff,2)}', transform=plt.gca().transAxes)
 
         plt.savefig(os.path.join(self._out_dir, f'age_encoder_check_{age_range}.png'))
         plt.savefig(os.path.join(self._out_dir, f'age_encoder_check_{age_range}.svg'))
 
         return average_diff
 
-    def age_prediction_encode_output(self, data_loader):
+    def age_prediction_encode_output(self, train_loader, test_loader):
 
         """
         
         This function encodes the subjects, changes the age latent to a random age, decodes, then encodes again and meaures if the second encoding can generate 
         the same age that it was assigned to after the first encoding. If the encoder check test shows the encoder works well, this tests will show how well the decoder performs.
 
-        Output: two scatter plots. One for assigned age vs predicted age after second encoding and one for GT age vs predicted age after second encoding.
+        Output: two scatter plots. One for assigned age vs predicted age after second encoding and one for GT age vs predicted age after second encoding. Both the training and val/test set are plotted
         
         """
-        age_actuals = []
-        age_latents = []
-        age_preds = []
-        names = []
 
-        for batch in tqdm.tqdm(data_loader):
+        for j in range(2):
 
-            if self._config['data']['swap_features']:
-                x = batch.x[self._manager.batch_diagonal_idx, ::]   
+            if j == 0:
+                data_loader = train_loader
             else:
-                x = batch.x
+                data_loader = test_loader
 
-            age = batch.age 
-            name = batch.fname
+            age_actuals = []
+            age_latents = []
+            age_preds = []
+            names = []
 
-            z = self.get_z(x)
-            
-            storage_path = os.path.join(self._manager._precomputed_storage_path, f'normalise_age_{self._data_type}.pkl')
-            with open(storage_path, 'rb') as file:
-                age_train_mean, age_train_std = \
-                    pickle.load(file)
-                
-            which_data_remove = self._config['data']['dataset_remove']
-            age_range = self._config['data']['dataset_age_range']
-            # age_lower = int(age_range.split("-")[0])
-            # age_upper = int(age_range.split("-")[1])
-            age_lower, age_upper = map(int, age_range.split('-'))
+            for batch in tqdm.tqdm(data_loader):
 
-            for i in tqdm.tqdm(range(z.shape[0])):
-                if name[i] in which_data_remove:
-                    pass
+                if self._config['data']['swap_features']:
+                    x = batch.x[self._manager.batch_diagonal_idx, ::]   
                 else:
-                    age_latent = random.randrange(age_lower, age_upper)
-                    age_latents.append(age_latent)
-                    age_latent_norm = (age_latent - age_train_mean) / age_train_std
-                    z[i, -1] = age_latent_norm
+                    x = batch.x
 
-            gen_verts = self._manager.generate(z.to(self._device))
-            z_2 = self._manager.encode(gen_verts.to(self._device)).detach().cpu()
+                age = batch.age 
+                name = batch.fname
 
-            for i in tqdm.tqdm(range(z.shape[0])):
-                if name[i] in which_data_remove:
-                    pass
-                else:
-                    age_pred = z_2[i][-1].item()
-                    age_pred = (age_pred * age_train_std) + age_train_mean
-                    age_preds.append(int(age_pred))
-                    age_actual = age[i].item()
-                    age_actuals.append(age_actual)
-                    names.append(name[i])
+                z = self.get_z(x)
                 
+                storage_path = os.path.join(self._manager._precomputed_storage_path, f'normalise_age_{self._data_type}.pkl')
+                with open(storage_path, 'rb') as file:
+                    age_train_mean, age_train_std = \
+                        pickle.load(file)
+                    
+                which_data_remove = self._config['data']['dataset_remove']
+                age_range = self._config['data']['dataset_age_range']
+                # age_lower = int(age_range.split("-")[0])
+                # age_upper = int(age_range.split("-")[1])
+                age_lower, age_upper = map(int, age_range.split('-'))
 
-        average_pred_diff_latent_pred = np.mean(np.abs(np.array(age_latents) - np.array(age_preds)))
-        average_pred_diff_actual_pred = np.mean(np.abs(np.array(age_actuals) - np.array(age_preds)))
+                for i in tqdm.tqdm(range(z.shape[0])):
+                    if name[i] in which_data_remove:
+                        pass
+                    else:
+                        age_latent = random.randrange(age_lower, age_upper)
+                        age_latents.append(age_latent)
+                        age_latent_norm = (age_latent - age_train_mean) / age_train_std
+                        z[i, -1] = age_latent_norm
+
+                gen_verts = self._manager.generate(z.to(self._device))
+                z_2 = self._manager.encode(gen_verts.to(self._device)).detach().cpu()
+
+                for i in tqdm.tqdm(range(z.shape[0])):
+                    if name[i] in which_data_remove:
+                        pass
+                    else:
+                        age_pred = z_2[i][-1].item()
+                        age_pred = (age_pred * age_train_std) + age_train_mean
+                        age_preds.append(int(age_pred))
+                        age_actual = age[i].item()
+                        age_actuals.append(age_actual)
+                        names.append(name[i])
+                    
+
+            average_pred_diff_latent_pred = np.mean(np.abs(np.array(age_latents) - np.array(age_preds)))
+            average_pred_diff_actual_pred = np.mean(np.abs(np.array(age_actuals) - np.array(age_preds)))
+
+            if j == 0:
+                train_age_latents = age_latents
+                train_age_preds = age_preds
+                train_age_actuals = age_actuals
+                train_average_pred_diff_latent_pred = average_pred_diff_latent_pred
+                train_average_pred_diff_actual_pred = average_pred_diff_actual_pred
+            else:
+                test_age_latents = age_latents
+                test_age_preds = age_preds
+                test_age_actuals = age_actuals
+                test_average_pred_diff_latent_pred = average_pred_diff_latent_pred
+                test_average_pred_diff_actual_pred = average_pred_diff_actual_pred
+
 
         plt.clf()
 
-        plt.scatter(age_latents, age_preds, color='orange')
+        plt.scatter(train_age_latents, train_age_preds, color='yellow', marker='x', label='Train')
+        plt.scatter(test_age_latents, test_age_preds, color='orange', label='Test')
         plt.plot([age_lower, age_upper], [age_lower, age_upper], 'r--')
 
         plt.title(f'Decoder accuracy against random age ({age_range})')
         plt.xlabel('Random assigned age')
         plt.ylabel('Predicted age')
 
-        plt.text(0.1, 0.9, f'Mean absolute difference = {round(average_pred_diff_latent_pred, 2)}', transform=plt.gca().transAxes)
+        plt.text(0.1, 0.9, f'Mean absolute difference (train) = {round(train_average_pred_diff_latent_pred, 2)}', transform=plt.gca().transAxes)
+        plt.text(0.1, 0.85, f'Mean absolute difference (test) = {round(test_average_pred_diff_latent_pred, 2)}', transform=plt.gca().transAxes)
 
         plt.savefig(os.path.join(self._out_dir, f'decoder_accuracy_random_{age_range}.png'))
         plt.savefig(os.path.join(self._out_dir, f'decoder_accuracy_random_{age_range}.svg'))
 
         plt.clf()
 
-        plt.scatter(age_actuals, age_preds, color='orange')
+        plt.scatter(train_age_actuals, train_age_preds, color='yellow', marker='x', label='Train')
+        plt.scatter(test_age_actuals, test_age_preds, color='orange', label='Test')
         plt.plot([age_lower, age_upper], [age_lower, age_upper], 'r--')
 
         plt.title(f'Decoder accuracy against random age original age ({age_range})')
         plt.xlabel('Original age')
         plt.ylabel('Predicted age')
 
-        plt.text(0.1, 0.9, f'Mean absolute difference = {round(average_pred_diff_actual_pred, 2)}', transform=plt.gca().transAxes)
+        plt.text(0.1, 0.9, f'Mean absolute difference (train) = {round(train_average_pred_diff_actual_pred, 2)}', transform=plt.gca().transAxes)
+        plt.text(0.1, 0.85, f'Mean absolute difference (test) = {round(test_average_pred_diff_actual_pred, 2)}', transform=plt.gca().transAxes)
 
         plt.savefig(os.path.join(self._out_dir, f'decoder_accuracy_original_{age_range}.png'))
         plt.savefig(os.path.join(self._out_dir, f'decoder_accuracy_original_{age_range}.svg'))
@@ -1232,11 +1280,12 @@ class Tester:
         data_name = ['train', 'val', 'test']
         data_type_list = []
         ages_list = []
+        ages_list_original = []
 
-        storage_path = os.path.join(precomputed_storage_path, f'normalise_age_{self._data_type}.pkl')
-        with open(storage_path, 'rb') as file:
-            age_train_mean, age_train_std = \
-                pickle.load(file)
+        # storage_path = os.path.join(precomputed_storage_path, f'normalise_age_{self._data_type}.pkl')
+        # with open(storage_path, 'rb') as file:
+        #     age_train_mean, age_train_std = \
+        #         pickle.load(file)
 
         for i in range(3):
             for batch in tqdm.tqdm(data[i]):  
@@ -1244,6 +1293,7 @@ class Tester:
 
                     # age = (batch.age[j].item() * age_train_std) + age_train_mean
                     age = batch.age[j].item()
+                    ages_list_original.append(age)
                     if age == 0:
                         age = 0.001
                     else:
@@ -1260,22 +1310,37 @@ class Tester:
 
         storage_path = os.path.join(precomputed_storage_path, f'{self._data_type}_age_distribution_{age_range}.png')
 
+        if self._data_type == 'lyhm':
+            bins_num = 12
+        else:
+            bins_num = age_upper-age_lower + 1
+
         if not os.path.exists(storage_path):
 
             # bin_edges = list(range(0, 91, 10))
             # bin_labels = ["0-10", "11-20", "21-30", "31-40", "41-50", "51-60", "61-70", "71-80", "81-90"]
-        
-            bin_edges = np.linspace(age_lower, age_upper, 10)
-            bin_labels = [f"{int(bin_edges[i])}-{int(bin_edges[i+1])}" for i in range(len(bin_edges)-1)]
+
+            # bin_edges = np.linspace(age_lower, age_upper, bins_num)
+            # bin_labels = [f"{int(bin_edges[i])}-{int(bin_edges[i+1])}" for i in range(len(bin_edges)-1)]
+
+            # # Determine the overall min and max age across all datasets
+            # overall_min_age = round(min(min(train_ages), min(test_ages), min(val_ages)))
+            # overall_max_age = round(max(max(train_ages), max(test_ages), max(val_ages)))
+
+            # Define the bin edges
+            bin_edges = np.linspace(min(ages_list_original), max(ages_list_original), bins_num)
+            bin_labels = [f"{int(bin_edges[i])}" for i in range(len(bin_edges))]
+            label_points = [bin_edges[i] for i in range(len(bin_edges))]
             mid_points = [(bin_edges[i] + bin_edges[i+1]) / 2 for i in range(len(bin_edges)-1)]
+            
 
             # Plot the histogram - 0-2 mean up to and including 2 years old for example
             plt.figure(figsize=(10,6))
             n, bins, patches = plt.hist(ages_list, bins=bin_edges, alpha=0.7, edgecolor="k")
             # plt.hist(ages_list, bins=bin_edges, alpha=0.7)
-            plt.xticks(mid_points, bin_labels)
+            plt.xticks(label_points, bin_labels)
             plt.legend(loc='upper right')
-            plt.xlabel("Age Ranges")
+            plt.xlabel("Age")
             plt.ylabel("Frequency")
             plt.title("Age Distribution")
 
@@ -1303,42 +1368,161 @@ class Tester:
             train_ages = []
             test_ages = []
             val_ages = []
+            train_ages_original = []
+            test_ages_original  = []
+            val_ages_original  = []
 
             # Iterate over data_types and ages simultaneously
             for data_type, age in zip(data_type_list, ages_list):
                 if age == 0.001:
-                    age = 0
+                    age_original = 0
                 else: 
-                    age += 0.001
+                    age_original = age + 0.001
 
                 if data_type == 'train':
                     train_ages.append(age)
+                    train_ages_original.append(age_original)
                 elif data_type == 'test':
                     test_ages.append(age)
+                    test_ages_original.append(age_original)
                 elif data_type == 'val':
                     val_ages.append(age)
+                    val_ages_original.append(age_original)
 
             plt.clf()
 
+
+            # Determine the overall min and max age across all datasets
+            overall_min_age = min(ages_list_original)
+            overall_max_age = max(ages_list_original)
+
+            # Define the bin edges
+            bin_edges = np.linspace(overall_min_age, overall_max_age, bins_num)
+
             # Plotting
             plt.figure(figsize=(10, 6))
-            plt.hist(train_ages, bins=20, alpha=0.5, label='Train')
-            plt.hist(test_ages, bins=20, alpha=0.5, label='Test')
-            plt.hist(val_ages, bins=20, alpha=0.5, label='Validation')
-            plt.legend(loc='upper right')
+            plt.hist(train_ages, bins=bin_edges, alpha=0.5, label='Train', edgecolor='black')
+            plt.hist(val_ages, bins=bin_edges, alpha=0.5, label='Validation', edgecolor='black')
+            plt.hist(test_ages, bins=bin_edges, alpha=0.5, label='Test', edgecolor='black')
+            plt.legend(loc='upper right', bbox_to_anchor=(1, 0.8))
             plt.xlabel('Age')
-            plt.ylabel('Count')
-            plt.title('Age distribution in Train, Test and Validation sets')
+            plt.ylabel('Frequency')
+            plt.title('Age distribution in Train, Validation and Test sets')
+
+            # bin_labels = [f"{int(bin_edges[i])}-{int(bin_edges[i+1])}" for i in range(len(bin_edges)-1)]
+            # mid_points = [(bin_edges[i] + bin_edges[i+1]) / 2 for i in range(len(bin_edges)-1)]
+            # plt.xticks(mid_points, bin_labels)
+
+            bin_labels = [f"{int(bin_edges[i])}" for i in range(len(bin_edges))]
+            label_points = [bin_edges[i] for i in range(len(bin_edges))]
+            plt.xticks(label_points, bin_labels)
 
             # Annotate min and max for each set
-            plt.annotate(f'Train min: {min(train_ages)}, max: {max(train_ages)}, count: {len(train_ages)}', xy=(0.5, 0.95), xycoords='axes fraction')
-            plt.annotate(f'Validation min: {min(val_ages)}, max: {max(val_ages)}, count: {len(val_ages)}', xy=(0.5, 0.85), xycoords='axes fraction')
-            plt.annotate(f'Test min: {min(test_ages)}, max: {max(test_ages)}, count: {len(test_ages)}', xy=(0.5, 0.90), xycoords='axes fraction')
+            plt.annotate(f'Train min: {min(train_ages_original)}, max: {max(train_ages_original)}, count: {len(train_ages_original)}', xy=(0.55, 0.95), xycoords='axes fraction')
+            plt.annotate(f'Validation min: {min(val_ages_original)}, max: {max(val_ages_original)}, count: {len(val_ages_original)}', xy=(0.55, 0.85), xycoords='axes fraction')
+            plt.annotate(f'Test min: {min(test_ages_original)}, max: {max(test_ages_original)}, count: {len(test_ages_original)}', xy=(0.55, 0.90), xycoords='axes fraction')
 
             plt.savefig(storage_path)
 
-        else:
-            print(f"{storage_path} already exists.")
+
+
+    def process_data(self, loader):
+
+        latents_list = []
+        ages_list = []
+        # fnames_list = []
+        # data_list= []
+        values_to_remove = self._config['data']['dataset_remove']
+
+        for batch in tqdm.tqdm(loader):
+
+            if self._config['data']['swap_features']:
+                data = batch.x[self._manager.batch_diagonal_idx, ::] 
+            else:
+                data = batch.x
+            
+            z = self.get_z(data)
+            z = z[:, :-1]
+
+            ages = batch.age
+            fnames = batch.fname
+
+            for i in range(data.shape[0]):
+                if fnames[i] in values_to_remove:
+                    pass
+                else:
+                    ages_list.append(ages[i])
+                    latents_list.append(z[i])
+
+        ages = torch.cat(ages_list, dim=0)
+        latents = torch.stack(latents_list).detach().cpu().numpy()
+
+        return latents, ages
+
+    
+
+    def age_prediction_MLP(self, train_loader, val_loader):
+
+        """ 
+        
+        This function uses an MLP to predict the age from the feature latents. 
+        The feature z values are used for training that are generated by the VAE encoder. 
+        The output is the average absolute difference between GT age and age predicted
+
+        Output: graph plotting predicted vs actual age along with the mean absolute difference 
+        
+        """
+
+        assert self._config['data']['age_disentanglement']
+
+        train_latents, train_ages = self.process_data(train_loader)
+        val_latents, val_ages = self.process_data(val_loader)
+        # test_latents, test_ages = self.process_data(test_loader)
+
+        # all_latents = np.concatenate((train_latents, val_latents), axis=0)
+        # all_ages = np.concatenate((train_ages, val_ages), axis=0)
+
+        sc = StandardScaler()
+        train_latents_scaled = sc.fit_transform(train_latents)
+
+        mlp_reg = MLPRegressor(hidden_layer_sizes=(150, 100, 50),
+                            max_iter=300, activation='relu',
+                            solver='adam', early_stopping=True,
+                            validation_fraction=0.1, # % of data in validation set
+                            n_iter_no_change=10, # Number of iterations with no improvement to wait before stopping
+                            learning_rate_init=0.01)
+
+        mlp_reg.fit(train_latents_scaled, train_ages)
+
+        train_ages_pred = mlp_reg.predict(train_latents_scaled)
+        train_age_diff = abs(train_ages - train_ages_pred)
+        train_mean_age_diff = train_age_diff.mean()
+
+        val_latents_scaled = sc.transform(val_latents)
+        val_ages_pred = mlp_reg.predict(val_latents_scaled)
+        val_age_diff = abs(val_ages - val_ages_pred)
+        val_mean_age_diff = val_age_diff.mean()
+
+        # create a graph plotting the actual ages against MLP predicted ages on test set
+        age_range = self._config['data']['dataset_age_range']
+        min_age, max_age = map(int, age_range.split('-'))
+
+        plt.clf()
+
+        plt.scatter(train_ages, train_ages_pred, color='yellow', marker='x', label='Train')
+        plt.scatter(val_ages, val_ages_pred, color='green', label='Validation')
+        plt.plot([0, max_age], [0, max_age], 'r--')
+
+        plt.title('Age prediction on feature latents')
+        plt.xlabel('Ground truth age')
+        plt.ylabel('MLP predicted age')
+
+        plt.text(0.1, 0.9, f'Mean absolute difference (train) = {round(train_mean_age_diff.item(), 2)}', transform=plt.gca().transAxes)
+        plt.text(0.1, 0.85, f'Mean absolute difference (validation) = {round(val_mean_age_diff.item(), 2)}', transform=plt.gca().transAxes)
+
+        plt.savefig(os.path.join(self._out_dir, f'mlp_age_prediciton_{age_range}.png'))
+        plt.savefig(os.path.join(self._out_dir, f'mlp_age_prediciton_{age_range}.svg'))
+
 
     @staticmethod
     def vector_linspace(start, finish, steps):
