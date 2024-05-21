@@ -86,10 +86,10 @@ class Tester:
         self.per_variable_range_experiments(use_z_stats=False)
         self.random_generation_and_rendering(n_samples=16)
 
-        if self._config['data']['age_disentanglement']:
-            self.age_encoder_check(self._train_loader, self._val_loader)
+        if self._config['model']['age_disentanglement']:
+            self.age_encoder_check(self._train_loader, self._test_loader)
             self.dataset_age_split(self._train_loader, self._val_loader, self._test_loader)
-            self.age_prediction_MLP(self._train_loader, self._val_loader)
+            self.age_prediction_MLP(self._train_loader, self._test_loader)
 
             if self._config['model']['conditional_vae']:
                 self.conditional_age_latent_changing(self._val_loader)
@@ -166,12 +166,12 @@ class Tester:
 
     def per_variable_range_experiments(self, z_range_multiplier=1,
                                        use_z_stats=True):
-        if self._is_vae and not use_z_stats and not self._config['data']['age_disentanglement']:
+        if self._is_vae and not use_z_stats and not self._config['model']['age_disentanglement']:
             latent_size = self._manager.model_latent_size
             z_means = torch.zeros(latent_size)
             z_mins = -3 * z_range_multiplier * torch.ones(latent_size)
             z_maxs = 3 * z_range_multiplier * torch.ones(latent_size)
-        elif self._is_vae and not use_z_stats and self._config['data']['age_disentanglement']:
+        elif self._is_vae and not use_z_stats and self._config['model']['age_disentanglement']:
             latent_size = self._manager.model_latent_size   
             z_means = torch.zeros(latent_size)
             z_mins = -3 * z_range_multiplier * torch.ones(latent_size)
@@ -798,6 +798,13 @@ class Tester:
 
         z = self._manager.encode(batch.to(self._device)).detach()
 
+        # mu, age = self._manager.encode(batch.to(self._device))
+        
+        # mu = mu.detach()
+        # age = age.detach()
+ 
+        # z = torch.cat((mu, age), dim=1)
+
         return z
     
     def age_latent_changing(self, data_loader):
@@ -825,6 +832,9 @@ class Tester:
 
         batch = next(iter(data_loader))
 
+        mesh_ids = batch.fname
+        original_ages = batch.age.numpy()
+
         if self._config['data']['swap_features']:
             batch = batch.x[self._manager.batch_diagonal_idx, ::] 
         else:
@@ -835,25 +845,33 @@ class Tester:
         z_all = []
         z_all_prev = []
         z_all_first = []
+        z_original = []
 
         error_scale = 10
 
-
         grid_nrows = len(age_latent_ranges)
 
-        original_ages = []
+        encoded_original_ages = []
 
         for i in tqdm.tqdm(range(z.shape[0])):
+            # append pre model mesh
+            original = batch[i, ::].clone().unsqueeze(0)
+            if self._normalized_data:
+                    original = self._unnormalize_verts(original.to(self._device))
+            rendering_original = self._manager.render(original).cpu()
+            z_original.append(rendering_original.squeeze())
+
             new_z = z[i, ::].clone()
             new_z_original = z[i, ::].clone()
             gen_verts_original = self._manager.generate(new_z_original.to(self._device))
             differences = []
             differences_prev = []
             differences_first = []
+            differences_original = []
             age_latent_ranges[0] = new_z[-1]
-            original_age = age_latent_ranges[0].item()
-            original_age = round((original_age * age_train_std) + age_train_mean)
-            original_ages.append(original_age)
+            encoded_original_age = age_latent_ranges[0].item()
+            encoded_original_age = round((encoded_original_age * age_train_std) + age_train_mean)
+            encoded_original_ages.append(encoded_original_age)
 
             for j in range(grid_nrows):
                 new_z[-1] = age_latent_ranges[j]
@@ -863,9 +881,12 @@ class Tester:
                     gen_verts = self._unnormalize_verts(gen_verts)
                     gen_verts_original = self._unnormalize_verts(gen_verts_original)
 
+
                 renderings = self._manager.render(gen_verts).cpu()
                 z_all.append(renderings.squeeze())
-                if j != 0:
+                if j == 0:
+                    z_original.append(renderings.squeeze())
+                else:
                     z_all_prev.append(renderings.squeeze())
                     z_all_first.append(renderings.squeeze())
 
@@ -898,17 +919,32 @@ class Tester:
                     differences_from_first = self._manager.compute_vertex_errors(gen_verts, gen_verts_first)
                     differences_renderings_first = self._manager.render(gen_verts, differences_from_first, error_max_scale=error_scale).cpu().detach()
                     differences_first.append(differences_renderings_first.squeeze())
+
+                # difference from pre-post encode/decode
+                if j ==0:
+                    pre_mesh = original
+                    post_mesh = gen_verts_original
+                    differences_from_pre_pre = self._manager.compute_vertex_errors(pre_mesh, pre_mesh)
+                    differences_renderings_pre_pre = self._manager.render(pre_mesh, differences_from_pre_pre, error_max_scale=error_scale).cpu().detach()
+                    differences_original.append(differences_renderings_pre_pre.squeeze())
+                    differences_from_pre_post = self._manager.compute_vertex_errors(post_mesh, pre_mesh)
+                    differences_renderings_pre_post = self._manager.render(gen_verts, differences_from_pre_post, error_max_scale=error_scale).cpu().detach()
+                    differences_original.append(differences_renderings_pre_post.squeeze())
+
                 
                 gen_verts_prev = gen_verts
 
             z_all.extend(differences)
             z_all_prev.extend(differences_prev)
             z_all_first.extend(differences_first)
+            z_original.extend(differences_original)
 
         # create a results file 
 
         line_to_add_1 = 'age_latent_changing original ages: ' + str(original_ages)
-        line_to_add_2 = 'age_latent_changing new ages: ' + str(age_latent_ranges_original)
+        line_to_add_2 = 'age_latent_changing original ages after encoded: ' + str(encoded_original_ages)
+        line_to_add_3 = 'age_latent_changing new ages: ' + str(age_latent_ranges_original)
+        line_to_add_4 = 'age_latent_changing mesh ids: ' + str(mesh_ids)
 
         filename = os.path.join(self._out_dir, 'results.txt')
 
@@ -923,21 +959,32 @@ class Tester:
             file.write('\n' * 2)
             file.write(line_to_add_2)
             file.write('\n' * 2)
+            file.write(line_to_add_3)
+            file.write('\n' * 2)
+            file.write(line_to_add_4)
+            file.write('\n' * 2)
+
+        padding_value = 10
 
         # difference from original 
         stacked_frames = torch.stack(z_all)
-        grid = make_grid(stacked_frames, padding=10, pad_value=1, nrow=grid_nrows) 
+        grid = make_grid(stacked_frames, padding=padding_value, pad_value=1, nrow=grid_nrows) 
         save_image(grid, os.path.join(self._out_dir, f'age_latent_changing_original_{age_latent_ranges_original}.png'))
 
         # difference from previous 
         stacked_frames_prev = torch.stack(z_all_prev)
-        grid_prev = make_grid(stacked_frames_prev, padding=10, pad_value=1, nrow=grid_nrows-1) 
+        grid_prev = make_grid(stacked_frames_prev, padding=padding_value, pad_value=1, nrow=grid_nrows-1) 
         save_image(grid_prev, os.path.join(self._out_dir, f'age_latent_changing_previous_{age_latent_ranges_original}.png'))
 
         # difference from first 
         stacked_frames_first = torch.stack(z_all_first)
-        grid_first = make_grid(stacked_frames_first, padding=10, pad_value=1, nrow=grid_nrows-1) 
+        grid_first = make_grid(stacked_frames_first, padding=padding_value, pad_value=1, nrow=grid_nrows-1) 
         save_image(grid_first, os.path.join(self._out_dir, f'age_latent_changing_first_{age_latent_ranges_original}.png'))
+
+        # difference from original 
+        stacked_frames_original = torch.stack(z_original)
+        grid_original = make_grid(stacked_frames_original, padding=padding_value, pad_value=1, nrow=2) 
+        save_image(grid_original, os.path.join(self._out_dir, f'pre_post_model.png'))
 
         # ##################
 
@@ -1087,7 +1134,8 @@ class Tester:
                 if self._config['data']['swap_features']:
                     batch = batch[self._manager.batch_diagonal_idx, ::]
 
-                z = self._manager.encode(batch.to(self._device)).detach().cpu()
+                # z = self._manager.encode(batch.to(self._device)).detach().cpu()
+                z = self.get_z(batch)
 
                 z_age = z[:, -1]
                 z_age = (z_age * age_train_std) + age_train_mean
@@ -1122,19 +1170,28 @@ class Tester:
         age_range = self._config['data']['dataset_age_range']
         min_age, max_age = map(int, age_range.split('-'))
 
+        plt.figure(figsize=(5, 5))
+
         plt.clf()
 
-        plt.scatter(train_age_original, train_age_predict, color='yellow', marker='x', label='Train')
-        plt.scatter(test_age_original, test_age_predict, color='blue', label='Test')
+        plt.scatter(train_age_original, train_age_predict, color='yellow', marker='x', label='Train dataset')
+        plt.scatter(test_age_original, test_age_predict, color='blue', label='Test dataset')
         # plt.plot([0, 100], [0, 100], 'r--')
         plt.plot([min_age, max_age], [min_age, max_age], 'r--')
 
-        plt.title(f'Encoder accuracy of age latent ({age_range})')
-        plt.xlabel('Original age')
-        plt.ylabel('Predicted age')
+        plt.title(f'Age prediction on age latent')
+        plt.xlabel('Ground truth age (years)')
+        # plt.title(f'Encoder accuracy of age latent ({age_range})')
+        # plt.xlabel('Original age')
+        plt.ylabel('Predicted age (years)')
 
-        plt.text(0.1, 0.9, f'Mean absolute difference (train) = {round(train_average_diff,2)}', transform=plt.gca().transAxes)
-        plt.text(0.1, 0.85, f'Mean absolute difference (test) = {round(test_average_diff,2)}', transform=plt.gca().transAxes)
+        plt.text(0.25, 0.1, f'Mean absolute difference (train) = {round(train_average_diff,2)} years', transform=plt.gca().transAxes)
+        plt.text(0.25, 0.05, f'Mean absolute difference (test) = {round(test_average_diff,2)} years', transform=plt.gca().transAxes)
+
+        plt.legend(loc='upper left')
+
+        plt.xticks(range(0, 18))
+        plt.yticks(range(0, 18))
 
         plt.savefig(os.path.join(self._out_dir, f'age_encoder_check_{age_range}.png'))
         plt.savefig(os.path.join(self._out_dir, f'age_encoder_check_{age_range}.svg'))
@@ -1197,7 +1254,8 @@ class Tester:
                         z[i, -1] = age_latent_norm
 
                 gen_verts = self._manager.generate(z.to(self._device))
-                z_2 = self._manager.encode(gen_verts.to(self._device)).detach().cpu()
+                # z_2 = self._manager.encode(gen_verts.to(self._device)).detach().cpu()
+                z_2 = self.get_z(gen_verts)
 
                 for i in tqdm.tqdm(range(z.shape[0])):
                     if name[i] in which_data_remove:
@@ -1227,35 +1285,49 @@ class Tester:
                 test_average_pred_diff_latent_pred = average_pred_diff_latent_pred
                 test_average_pred_diff_actual_pred = average_pred_diff_actual_pred
 
+        plt.figure(figsize=(7, 7))
 
         plt.clf()
 
-        plt.scatter(train_age_latents, train_age_preds, color='yellow', marker='x', label='Train')
-        plt.scatter(test_age_latents, test_age_preds, color='orange', label='Test')
+        plt.scatter(train_age_latents, train_age_preds, color='yellow', marker='x', label='Train dataset')
+        plt.scatter(test_age_latents, test_age_preds, color='orange', label='Tes dataset')
         plt.plot([age_lower, age_upper], [age_lower, age_upper], 'r--')
 
-        plt.title(f'Decoder accuracy against random age ({age_range})')
-        plt.xlabel('Random assigned age')
-        plt.ylabel('Predicted age')
+        plt.title(f'Age prediction on age latent using randomly assinged age')
+        # plt.title(f'Decoder accuracy against random age ({age_range})')
+        plt.xlabel('Random assigned age (years)')
+        plt.ylabel('Predicted age (years)')
 
-        plt.text(0.1, 0.9, f'Mean absolute difference (train) = {round(train_average_pred_diff_latent_pred, 2)}', transform=plt.gca().transAxes)
-        plt.text(0.1, 0.85, f'Mean absolute difference (test) = {round(test_average_pred_diff_latent_pred, 2)}', transform=plt.gca().transAxes)
+        plt.text(0.35, 0.1, f'Mean absolute difference (train) = {round(train_average_pred_diff_latent_pred, 2)} years', transform=plt.gca().transAxes)
+        plt.text(0.35, 0.05, f'Mean absolute difference (test) = {round(test_average_pred_diff_latent_pred, 2)} years', transform=plt.gca().transAxes)
+
+        plt.legend(loc='upper left')
+
+        plt.xticks(range(0, 18))
+        plt.yticks(range(0, 18))
 
         plt.savefig(os.path.join(self._out_dir, f'decoder_accuracy_random_{age_range}.png'))
         plt.savefig(os.path.join(self._out_dir, f'decoder_accuracy_random_{age_range}.svg'))
 
+        plt.figure(figsize=(7, 7))
+
         plt.clf()
 
-        plt.scatter(train_age_actuals, train_age_preds, color='yellow', marker='x', label='Train')
-        plt.scatter(test_age_actuals, test_age_preds, color='orange', label='Test')
+        plt.scatter(train_age_actuals, train_age_preds, color='yellow', marker='x', label='Train dataset')
+        plt.scatter(test_age_actuals, test_age_preds, color='orange', label='Test dataset')
         plt.plot([age_lower, age_upper], [age_lower, age_upper], 'r--')
 
         plt.title(f'Decoder accuracy against random age original age ({age_range})')
-        plt.xlabel('Original age')
-        plt.ylabel('Predicted age')
+        plt.xlabel('Ground truth age (years)')
+        plt.ylabel('Predicted age (years)')
 
-        plt.text(0.1, 0.9, f'Mean absolute difference (train) = {round(train_average_pred_diff_actual_pred, 2)}', transform=plt.gca().transAxes)
-        plt.text(0.1, 0.85, f'Mean absolute difference (test) = {round(test_average_pred_diff_actual_pred, 2)}', transform=plt.gca().transAxes)
+        plt.text(0.35, 0.1, f'Mean absolute difference (train) = {round(train_average_pred_diff_actual_pred, 2)} years', transform=plt.gca().transAxes)
+        plt.text(0.35, 0.05, f'Mean absolute difference (test) = {round(test_average_pred_diff_actual_pred, 2)} years', transform=plt.gca().transAxes)
+
+        plt.legend(loc='upper left')
+
+        plt.xticks(range(0, 18))
+        plt.yticks(range(0, 18))
 
         plt.savefig(os.path.join(self._out_dir, f'decoder_accuracy_original_{age_range}.png'))
         plt.savefig(os.path.join(self._out_dir, f'decoder_accuracy_original_{age_range}.svg'))
@@ -1473,8 +1545,10 @@ class Tester:
         
         """
 
-        assert self._config['data']['age_disentanglement']
+        assert self._config['model']['age_disentanglement']
 
+        # train_latents & val_latents are only the feature latents 
+        # train_ages & val_ages are the ground truth ages
         train_latents, train_ages = self.process_data(train_loader)
         val_latents, val_ages = self.process_data(val_loader)
         # test_latents, test_ages = self.process_data(test_loader)
@@ -1507,18 +1581,25 @@ class Tester:
         age_range = self._config['data']['dataset_age_range']
         min_age, max_age = map(int, age_range.split('-'))
 
+        plt.figure(figsize=(5, 5)) 
+
         plt.clf()
 
-        plt.scatter(train_ages, train_ages_pred, color='yellow', marker='x', label='Train')
-        plt.scatter(val_ages, val_ages_pred, color='green', label='Validation')
+        plt.scatter(train_ages, train_ages_pred, color='yellow', marker='x', label='Train dataset')
+        plt.scatter(val_ages, val_ages_pred, color='green', label='Test dataset')
         plt.plot([0, max_age], [0, max_age], 'r--')
 
         plt.title('Age prediction on feature latents')
-        plt.xlabel('Ground truth age')
-        plt.ylabel('MLP predicted age')
+        plt.xlabel('Ground truth age (years)')
+        plt.ylabel('Predicted age (years)')
 
-        plt.text(0.1, 0.9, f'Mean absolute difference (train) = {round(train_mean_age_diff.item(), 2)}', transform=plt.gca().transAxes)
-        plt.text(0.1, 0.85, f'Mean absolute difference (validation) = {round(val_mean_age_diff.item(), 2)}', transform=plt.gca().transAxes)
+        plt.text(0.25, 0.1, f'Mean absolute difference (train) = {round(train_mean_age_diff.item(), 2)} years', transform=plt.gca().transAxes)
+        plt.text(0.25, 0.05, f'Mean absolute difference (test) = {round(val_mean_age_diff.item(), 2)} years', transform=plt.gca().transAxes)
+
+        plt.legend(loc='upper left')
+
+        plt.xticks(range(0, 18))
+        plt.yticks(range(0, 18))
 
         plt.savefig(os.path.join(self._out_dir, f'mlp_age_prediciton_{age_range}.png'))
         plt.savefig(os.path.join(self._out_dir, f'mlp_age_prediciton_{age_range}.svg'))
@@ -1559,7 +1640,7 @@ if __name__ == '__main__':
     else:
         device = torch.device('cuda')
     
-    if configurations['data']['age_disentanglement']:
+    if configurations['model']['age_disentanglement']:
         configurations['model']['latent_size'] += configurations['model']['age_latent_size']
 
     if configurations['model']['conditional_vae']:
@@ -1591,3 +1672,4 @@ if __name__ == '__main__':
     # print(tester.compute_diversity_train_set())
     # print(tester.compute_diversity())
     # tester.evaluate_gen(test_loader, n_sampled_points=2048)
+

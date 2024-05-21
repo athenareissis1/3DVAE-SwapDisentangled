@@ -5,15 +5,15 @@ from torch_geometric.data import Data
 
 
 class SwapFeatures:
-    def __init__(self, template, data_config):
+    def __init__(self, template, model_config):
         self._template = template
-        self._data_config = data_config
+        self._model_config = model_config
         self._features_and_contours = template.feat_and_cont
         self._zones_keys = list(template.feat_and_cont.keys())
 
     def __call__(self, batched_data):
         batch_size = batched_data.x.shape[0]
-        if self._data_config['age_disentanglement']:
+        if self._model_config['age_disentanglement']:
             batch_age = batched_data.age
             batch_norm_age = batched_data.norm_age
             batch_fname = batched_data.fname
@@ -29,7 +29,7 @@ class SwapFeatures:
                     vertices = batched_data.x.numpy()
                     new_batch[i * batch_size + j, ::] = self.swap(
                         vertices[i, ::], vertices[j, ::], key)
-        if self._data_config['age_disentanglement']:
+        if self._model_config['age_disentanglement']:
             batched_data = Data(x=new_batch, swapped=key, age=batch_age, norm_age=batch_norm_age, fname=batch_fname)
         else: 
             batched_data = Data(x=new_batch, swapped=key)

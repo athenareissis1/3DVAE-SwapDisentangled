@@ -94,17 +94,17 @@ def get_data_loaders(config, template=None):
     batch_size = config['optimization']['batch_size']
 
     train_set = MeshInMemoryDataset(
-        data_config, dataset_type='train',
+        config, dataset_type='train',
         normalize=data_config['normalize_data'], template=template)
     validation_set = MeshInMemoryDataset(
-        data_config, dataset_type='val',
+        config, dataset_type='val',
         normalize=data_config['normalize_data'], template=template)
     test_set = MeshInMemoryDataset(
-        data_config, dataset_type='test',
+        config, dataset_type='test',
         normalize=data_config['normalize_data'], template=template)
     normalization_dict = train_set.normalization_dict
 
-    swapper = SwapFeatures(template, data_config) if data_config['swap_features'] else None
+    swapper = SwapFeatures(template, config['model']) if data_config['swap_features'] else None
 
     train_loader = MeshLoader(train_set, batch_size, shuffle=True,
                               drop_last=True, feature_swapper=swapper,
@@ -291,16 +291,17 @@ class MeshDataset(Dataset):
 
 
 class MeshInMemoryDataset(InMemoryDataset):
-    def __init__(self, root, precomputed_storage_path='precomputed',
+    def __init__(self, config, precomputed_storage_path='precomputed',
                  dataset_type='train', normalize=True,
                  transform=None, pre_transform=None, template=None):
-        self._config_data = root
-        self._root = root['dataset_path']
+        self._config = config
+        self._config_data = config['data']
+        self._root = config['data']['dataset_path']
         self._precomputed_storage_path = precomputed_storage_path
         if not os.path.isdir(precomputed_storage_path):
             os.mkdir(precomputed_storage_path)
 
-        self._data_type = root['dataset_type'].split("_", 1)[1]
+        self._data_type = config['data']['dataset_type'].split("_", 1)[1]
 
         self._dataset_type = dataset_type
         self._normalize = normalize
@@ -309,7 +310,7 @@ class MeshInMemoryDataset(InMemoryDataset):
         self._train_names, self._test_names, self._val_names = self.split_data(
             os.path.join(precomputed_storage_path, f'data_split_{self._data_type}.json'))
         
-        if root['age_disentanglement']:
+        if self._config['model']['age_disentanglement']:
             self._age_metadata = self.normalise_age()
 
         self._processed_files = [f + '.pt' for f in self.raw_file_names]
@@ -322,7 +323,7 @@ class MeshInMemoryDataset(InMemoryDataset):
 
         # this is where the data gets processed
         super(MeshInMemoryDataset, self).__init__(
-            root['dataset_path'], transform, pre_transform)
+            self._root, transform, pre_transform)
 
         if dataset_type == 'train':
             data_path = self.processed_paths[0]
@@ -382,7 +383,7 @@ class MeshInMemoryDataset(InMemoryDataset):
             all_file_names = self.find_filenames()
             all_file_names.sort()
 
-            if self._config_data['age_disentanglement']:
+            if self._config['model']['age_disentanglement']:
                 # using train_test_split from sklearn
                 age_metadata = pd.read_csv(self._config_data['dataset_metadata_path'], usecols=['id', 'AgeYears'])
                 all_ages = []
@@ -546,7 +547,7 @@ class MeshInMemoryDataset(InMemoryDataset):
             if self._normalize:
                 mesh_verts = (mesh_verts - self.mean) / self.std
 
-            if self._config_data['age_disentanglement']:
+            if self._config['model']['age_disentanglement']:
                 mesh_age, mesh_norm_age = self.age_data(fname)
                 mesh_name = self.file_id(fname)
                 data = Data(x=mesh_verts, age=mesh_age, norm_age=mesh_norm_age, fname=mesh_name)

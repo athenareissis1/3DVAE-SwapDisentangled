@@ -11,8 +11,7 @@ data:
   std_pca_latent: 3                                                             # for data generation, 1 to sample from correct distribution, > 1 exaggerate face shapes
   number_of_meshes: 10000                                                       # for data generation, > 0 if you want to generate data
   number_of_workers: 8
-  swap_features: True                                                           # if True, the resulting batch size will be batch_size^2
-  age_disentanglement: True                                                     # if True, an extra feature is added to the latent vector that represents age & age related losses are added
+  swap_features: False                                                           # if True, the resulting batch size will be batch_size^2
   
 optimization:
   epochs: 600
@@ -26,7 +25,7 @@ optimization:
   gaussian_weight: 0                                                            # alternative to KL divergence
   gaussian_mean_weight: 0
 
-  latent_consistency_weight: 5                                                # if 0, no latent consistency loss is used
+  latent_consistency_weight: 0                                                # if 0, no latent consistency loss is used
   latent_consistency_eta1: 0.5
   latent_consistency_eta2: 0.5
 
@@ -43,7 +42,12 @@ optimization:
 
   factor_weight: 0                                                              # if 0, no factor VAE
 
-  age_weight: 1.5                                                                  # if 0, no age loss is used
+  age_weight: 0                                                                  # if 0, no age loss is used
+
+  contrastive_weight: 1                                                         # if 0, no contrastive loss is used
+  contrastive_loss_temp: 181                                                     
+  contrastive_loss_threshold: 0.035                                               
+
 
 model:
   sampling:
@@ -54,11 +58,13 @@ model:
     dilation: [1, 1, 1, 1]                                                      # spiral dilation for each convolution. Delete precomputed file if changed.
   in_channels: 3                                                                # number of input vertex features. Most likely 3 (x, y, z)
   out_channels: [32, 32, 32, 64]                                                # channels of intermediate layers
-  latent_size: 33 #55                                                               # size of the latent vector
+  latent_size: 55                                                               # size of the latent vector
   age_latent_size: 1                                                            # size of additional age latents
   pre_z_sigmoid: False
   decode_using_gt_age: False                                                     # if True, the ground truth age is used as the age latent in z that gets passed to the decoder
   conditional_vae: False                                                         # if True, the gt age is concatinated onto the input mesh. To have full CVAE, decode_using_gt_age must also be set to True
+  contrastive_loss: True                                                        # if True, contrastive loss is used
+  age_disentanglement: True                                                     # if True, an extra feature is added to the latent vector that represents age & age related losses are added
 
 logging_frequency:
   tb_renderings: 50
