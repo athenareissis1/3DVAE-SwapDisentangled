@@ -61,8 +61,6 @@ model:
   latent_size: 55                                                               # size of the latent vector
   age_latent_size: 1                                                            # size of additional age latents
   pre_z_sigmoid: False
-  decode_using_gt_age: False                                                     # if True, the ground truth age is used as the age latent in z that gets passed to the decoder
-  conditional_vae: False                                                         # if True, the gt age is concatinated onto the input mesh. To have full CVAE, decode_using_gt_age must also be set to True
   contrastive_loss: True                                                        # if True, contrastive loss is used
   age_disentanglement: True                                                     # if True, an extra feature is added to the latent vector that represents age & age related losses are added
 

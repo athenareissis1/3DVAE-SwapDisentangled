@@ -90,31 +90,9 @@ class Tester:
             self.age_encoder_check(self._train_loader, self._test_loader)
             self.dataset_age_split(self._train_loader, self._val_loader, self._test_loader)
             self.age_prediction_MLP(self._train_loader, self._test_loader)
-
-            if self._config['model']['conditional_vae']:
-                self.conditional_age_latent_changing(self._val_loader)
-            else:
-                self.age_latent_changing(self._val_loader)
-                self.age_prediction_encode_output(self._train_loader, self._val_loader)
+            self.age_latent_changing(self._val_loader)
+            self.age_prediction_encode_output(self._train_loader, self._val_loader)
             
-
-    def conditional_data(self, data):
-
-        assert self._config['data']['swap_features'] == False
-
-        x = data.x
-        age = data.norm_age
-
-        # Expand and repeat ages to match the face_meshes shape
-        age_expanded = age.unsqueeze(-1).expand(-1, x.shape[1], 1)
-
-        # Concatenate along the last dimension
-        mesh_with_age = torch.cat((x, age_expanded), dim=2)
-        x = mesh_with_age.float()
-
-        data.x = x
-
-        return data
 
     def _unnormalize_verts(self, verts, dev=None):
         d = self._device if dev is None else dev
@@ -138,9 +116,6 @@ class Tester:
         except FileNotFoundError:
             latents_list = []
             for data in tqdm.tqdm(data_loader):
-
-                if self._config['model']['conditional_vae']:
-                    data = self.conditional_data(data)
                 latents_list.append(self._manager.encode(
                     data.x.to(self._device)).detach().cpu())
             latents = torch.cat(latents_list, dim=0)
@@ -1005,94 +980,6 @@ class Tester:
 
         # ##################
 
-    def conditional_age_latent_changing(self, data_loader):
-
-        """
-        
-        This function generates an image of 4 subjects from a batch and changes the age latent to 5 differenet ages and displays them with their difference maps compared to the orginal mesh. 
-        A subjects goes through the encoder, the age latent is changed, then goes through the decoder. 
-
-        Output: image of a batch with 5 different ages & difference maps when compared to the:
-         - original
-         - previous
-         - first column
-
-        """
-
-        assert self._config['data']['swap_features'] == False
-
-        storage_path = os.path.join(self._manager._precomputed_storage_path, f'normalise_age_{self._data_type}.pkl')
-        with open(storage_path, 'rb') as file:
-            age_train_mean, age_train_std = \
-                pickle.load(file)
-            
-        age_latent_ranges = self._config['testing']['age_latent_changing']
-        # age_latent_ranges_original = age_latent_ranges.copy()
-        age_latent_ranges = (age_latent_ranges - age_train_mean) / age_train_std
-
-        batch_original = next(iter(data_loader))
-
-        gen_all = []
-        error_scale = 10
-
-        for i in range(len(age_latent_ranges)):
-
-            batch = batch_original.clone()
-            differences = []
-
-            # adding age condition to input data
-            if i == 0:
-                data = self.conditional_data(batch)
-            else:
-                batch.norm_age = torch.full((batch.norm_age.size(0), 1), age_latent_ranges[i], dtype=torch.float64)
-                data = self.conditional_data(batch)
-
-            # encode and generate z
-            z = self.get_z(data.x)
-
-            # # add age condition to z latent representation
-            # if i == 0:
-            #     z[:, -1] = batch.norm_age.view(-1)
-            # else:
-            #     batch.norm_age = torch.full(batch.norm_age.size(), age_latent_ranges[i], dtype=torch.float64)
-            #     z[:, -1] = batch.norm_age.view(-1)
-
-            # decode and generate output mesh
-            if i == 0:
-                gen_verts_gt = self._manager.generate(z.to(self._device))
-                if self._normalized_data:
-                    gen_verts_gt = self._unnormalize_verts(gen_verts_gt)
-                renderings = self._manager.render(gen_verts_gt).cpu()
-                gen_all.append(renderings.squeeze())
-
-                differences_from_gt = self._manager.compute_vertex_errors(gen_verts_gt, gen_verts_gt)
-                differences_renderings = self._manager.render(gen_verts_gt, differences_from_gt, error_max_scale=error_scale).cpu().detach()
-                differences.append(differences_renderings.squeeze())
-                gen_all.extend(differences)
-            
-            else:
-                gen_verts = self._manager.generate(z.to(self._device))
-                if self._normalized_data:
-                    gen_verts = self._unnormalize_verts(gen_verts)
-                renderings = self._manager.render(gen_verts).cpu()
-                gen_all.append(renderings.squeeze())
-
-                differences_from_gt = self._manager.compute_vertex_errors(gen_verts, gen_verts_gt)
-                differences_renderings = self._manager.render(gen_verts, differences_from_gt, error_max_scale=error_scale).cpu().detach()
-                differences.append(differences_renderings.squeeze())
-                gen_all.extend(differences)
-            
-
-        # grid_nrows = len(age_latent_ranges)
-        grid_nrows = 4
-
-        # difference from original 
-        stacked_frames = torch.stack(gen_all)
-        stacked_frames = stacked_frames.view(-1, *stacked_frames.shape[2:])
-        grid = make_grid(stacked_frames, padding=10, pad_value=1, nrow=grid_nrows)
-        save_image(grid, os.path.join(self._out_dir, 'test_change_age.png'))
-        # save_image(grid, os.path.join(self._out_dir, f'age_latent_changing_original_{age_latent_ranges_original}.png'))
-
     def age_encoder_check(self, train_loader, test_loader):
 
         """
@@ -1122,9 +1009,6 @@ class Tester:
 
 
             for data in tqdm.tqdm(data_loader):
-
-                if self._config['model']['conditional_vae']:
-                    data = self.conditional_data(data)
 
                 batch = data.x
                 age = data.age.squeeze().tolist()
@@ -1559,12 +1443,20 @@ class Tester:
         sc = StandardScaler()
         train_latents_scaled = sc.fit_transform(train_latents)
 
+        # mlp_reg = MLPRegressor(hidden_layer_sizes=(150, 100, 50),
+        #                     max_iter=300, activation='relu',
+        #                     solver='adam', early_stopping=True,
+        #                     validation_fraction=0.1, # % of data in validation set
+        #                     n_iter_no_change=10, # Number of iterations with no improvement to wait before stopping
+        #                     learning_rate_init=0.01)
+
         mlp_reg = MLPRegressor(hidden_layer_sizes=(150, 100, 50),
                             max_iter=300, activation='relu',
                             solver='adam', early_stopping=True,
                             validation_fraction=0.1, # % of data in validation set
                             n_iter_no_change=10, # Number of iterations with no improvement to wait before stopping
-                            learning_rate_init=0.01)
+                            learning_rate_init=0.01,
+                            random_state=42)  # Set the random state for consistent results
 
         mlp_reg.fit(train_latents_scaled, train_ages)
 
@@ -1642,9 +1534,6 @@ if __name__ == '__main__':
     
     if configurations['model']['age_disentanglement']:
         configurations['model']['latent_size'] += configurations['model']['age_latent_size']
-
-    if configurations['model']['conditional_vae']:
-        configurations['model']['in_channels'] += 1
 
     manager = ModelManager(
         configurations=configurations, device=device,

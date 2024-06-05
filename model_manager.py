@@ -39,7 +39,6 @@ class ModelManager(torch.nn.Module):
         self._normalized_data = configurations['data']['normalize_data']
         self._age_disentanglement = configurations['model']['age_disentanglement']
         self._contrastive_loss = configurations['model']['contrastive_loss']
-        self._conditional_vae = configurations['model']['conditional_vae']
         self._data_type = configurations['data']['dataset_type'].split("_", 1)[1]
         self._inter_layer = configurations['model']['intermediate_layers']
         self._inter_layer_size = configurations['model']['intermediate_layer_size']
@@ -66,12 +65,10 @@ class ModelManager(torch.nn.Module):
                           spiral_indices=spirals_indices,
                           down_transform=down_transforms,
                           up_transform=up_transforms,
-                          decode_using_gt_age=self._model_params['decode_using_gt_age'], 
                           diagonal_idx=self._batch_diagonal_idx, 
                           is_vae=self._w_kl_loss > 0,
                           age_disentanglement=self._age_disentanglement, 
                           swap_feature=self._swap_feature,
-                          conditional_vae=self._conditional_vae,
                           inter_layer=self._inter_layer).to(device)
 
         self._optimizer = torch.optim.Adam(

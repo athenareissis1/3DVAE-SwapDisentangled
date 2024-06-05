@@ -67,7 +67,15 @@ class SpiralEnblock(nn.Module):
         out = F.elu(self.conv(x))
         out = Pool(out, down_transform)
         return out
+    
+class LinearLayer(nn.Module):
+    def __init__(self, in_features, out_features):
+        super(LinearLayer, self).__init__()
+        self.linear = nn.Linear(in_features, out_features)
 
+    def forward(self, x):
+        out = self.linear(F.elu(x))
+        return out
 
 class SpiralDeblock(nn.Module):
     def __init__(self, in_channels, out_channels, indices):
@@ -86,8 +94,8 @@ class SpiralDeblock(nn.Module):
 
 class Model(nn.Module):
     def __init__(self, in_channels, out_channels, latent_size, inter_layer_size,
-                 spiral_indices, down_transform, up_transform, decode_using_gt_age, diagonal_idx, 
-                 is_vae=False, age_disentanglement=False, swap_feature=False, conditional_vae=False, inter_layer=False):
+                 spiral_indices, down_transform, up_transform, diagonal_idx, 
+                 is_vae=False, age_disentanglement=False, swap_feature=False, inter_layer=False):
         super(Model, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -98,10 +106,8 @@ class Model(nn.Module):
         self.num_vert = self.down_transform[-1].size(0)
         self.is_vae = is_vae
         self.age_disentanglement = age_disentanglement
-        self.decode_using_gt_age = decode_using_gt_age
         self.swap_feature = swap_feature
         self.diagonal_idx = diagonal_idx
-        self.conditional_vae = conditional_vae 
         self.inter_layer = inter_layer
         self.inter_layer_size = inter_layer_size
 
@@ -120,50 +126,50 @@ class Model(nn.Module):
         ##############
 
         if self.inter_layer:
+            assert self.inter_layer_size > 0
             # use an intermediate layer of a higher dimention to which another intermediate step (for mu and logvar) and age will come from 
-            
-            # output layer of the encoder (higher dimention than mu & logvar)
-            self.en_layers.append(nn.Linear(self.num_vert * out_channels[-1], self.inter_layer_size))
-            self.relu1 = nn.ReLU()
+
+            self.en_layers.append(LinearLayer(self.num_vert * out_channels[-1], self.inter_layer_size))
 
             #########
 
-            # # WITH TWO INTERMEDIATE STEPS
+            # WITH TWO INTERMEDIATE STEPS
 
-            # # intermediate layer for mu and logvar (lower dimentional - same size and mu and logvar)
-            # if self.age_disentanglement:
-            #     self.intermediate = nn.Linear(self.inter_layer_size, latent_size-1)
-            # else:
-            #     self.intermediate = nn.Linear(self.inter_layer_size, latent_size)
-            # self.relu2 = nn.ReLU()
-
-            # # first branch to get mu and logvar
-            # if self.age_disentanglement:
-            #     self.mu = nn.Linear(latent_size-1, latent_size-1) 
-            # else:
-            #     self.mu = nn.Linear(latent_size, latent_size)
-            
-            # if self.is_vae:
-            #     if self.age_disentanglement:
-            #         self.logvar = nn.Linear(latent_size-1, latent_size-1) 
-            #     else:
-            #         self.logvar = nn.Linear(latent_size, latent_size)
-
-            # WITH ONE INTERMEDIATE STEPS
-
-            self.relu2 = nn.ReLU()
-
-            # first branch to get mu and logvar
+            # intermediate layer for mu and logvar (lower dimentional - same size and mu and logvar)
             if self.age_disentanglement:
-                self.mu = nn.Linear(self.inter_layer_size, latent_size-1) 
+                self.intermediate = LinearLayer(self.inter_layer_size, latent_size-1)
             else:
-                self.mu = nn.Linear(self.inter_layer_size, latent_size)
+                self.intermediate = LinearLayer(self.inter_layer_size, latent_size)
+
+            self.mu_logvar = nn.ModuleList()
+
+            # get mu and logvar from lower dimenational linear layer 
+            if self.age_disentanglement:
+                self.mu_logvar.append(nn.Linear(latent_size-1, latent_size-1))
+            else:
+                self.mu_logvar.append(nn.Linear(latent_size, latent_size))
             
             if self.is_vae:
                 if self.age_disentanglement:
-                    self.logvar = nn.Linear(self.inter_layer_size, latent_size-1) 
+                    self.mu_logvar.append(nn.Linear(latent_size-1, latent_size-1))
                 else:
-                    self.logvar = nn.Linear(self.inter_layer_size, latent_size)
+                    self.mu_logvar.append(nn.Linear(latent_size, latent_size))
+
+            # # WITH ONE INTERMEDIATE STEPS
+
+            # self.mu_logvar = nn.ModuleList()
+
+            # # first branch to get mu and logvar
+            # if self.age_disentanglement:
+            #     self.mu_logvar.append(nn.Linear(self.inter_layer_size, latent_size-1))
+            # else:
+            #     self.mu_logvar.append(nn.Linear(self.inter_layer_size, latent_size))
+            
+            # if self.is_vae:
+            #     if self.age_disentanglement:
+            #         self.mu_logvar.append(nn.Linear(self.inter_layer_size, latent_size-1))
+            #     else:
+            #         self.mu_logvar.append(nn.Linear(self.inter_layer_size, latent_size))
 
             ##########
             
@@ -173,11 +179,8 @@ class Model(nn.Module):
         
         else:
             # orginal code where encoder layer takes straight to mu and logvar
-            # mu layer (if age_disentanglement is True, age latent is removed from mu layer)
-            self.en_layers.append(
-                nn.Linear(self.num_vert * out_channels[-1], latent_size))
 
-            # logvar layer
+            #  if age_disentanglement is True, age latent is removed from mu layer
             if self.is_vae:  
                 if self.age_disentanglement:
                     self.en_layers.append(
@@ -185,7 +188,10 @@ class Model(nn.Module):
                 else:
                     self.en_layers.append(
                         nn.Linear(self.num_vert * out_channels[-1], latent_size))
-
+                    
+            # add another linear layer for logvar 
+            self.en_layers.append(
+                nn.Linear(self.num_vert * out_channels[-1], latent_size))
 
         ##############
 
@@ -203,8 +209,6 @@ class Model(nn.Module):
                 self.de_layers.append(
                     SpiralDeblock(out_channels[-idx], out_channels[-idx - 1],
                                   self.spiral_indices[-idx - 1]))
-        if self.conditional_vae:
-            in_channels -= 1
             
         self.de_layers.append(
             SpiralConv(out_channels[0], in_channels, self.spiral_indices[0]))
@@ -254,38 +258,34 @@ class Model(nn.Module):
             for i, layer in enumerate(self.en_layers):
                 if i < len(self.en_layers) - 1:
                     x = layer(x, self.down_transform[i])
-                    x = self.relu1(x)
 
             # reshaping to have the correct size
-            x = x.view(-1, self.en_layers[-1].weight.size(1))
+            x = x.view(-1, self.en_layers[-1].linear.weight.size(1))
             z_pre = self.en_layers[-1](x)
 
             #########
 
-            # # WITH TWO INTERMEDIATE STEP 
+            # WITH TWO INTERMEDIATE STEP 
 
-            # x_inter = self.relu2(self.intermediate(z_pre))
+            z_pre_2 = self.intermediate(z_pre)
 
-            # mu = self.mu(x_inter)
-            # if self.is_vae:
-            #     logvar = self.logvar(x_inter)
-            # else:
-            #     mu = torch.sigmoid(mu)
-            #     logvar = None
-        
-            # WITH ONE INTERMEDIATE STEP
-
-            z_pre = self.relu2(z_pre)
-
-            mu = self.mu(z_pre)
+            mu = self.mu_logvar[-1](z_pre_2)
             if self.is_vae:
-                logvar = self.logvar(z_pre)
+                logvar = self.mu_logvar[-2](z_pre_2)
             else:
                 mu = torch.sigmoid(mu)
                 logvar = None
+        
+            # # WITH ONE INTERMEDIATE STEP
+
+            # mu = self.mu_logvar[-1](z_pre)
+            # if self.is_vae:
+            #     logvar = self.mu_logvar[-2](z_pre)
+            # else:
+            #     mu = torch.sigmoid(mu)
+            #     logvar = None
 
             #########
-
 
             if self.age_disentanglement:
                 age = self.age(z_pre)
@@ -342,26 +342,10 @@ class Model(nn.Module):
     def forward(self, data):
 
         x = data.x
-
-        # if self.conditional_vae is true, then concatinate the age onto the x data before passing it into the model
-        if self.conditional_vae:
-            assert self.swap_feature == False
-            assert self.age_disentanglement == True
-            
-            age = data.norm_age
-
-            # Expand and repeat ages to match the face_meshes shape
-            age_expanded = age.unsqueeze(-1).expand(-1, x.shape[1], 1)
-
-            # Concatenate along the last dimension
-            mesh_with_age = torch.cat((x, age_expanded), dim=2)
-            x = mesh_with_age.float()
         
         mu, logvar = self.encode(x)
         if self.is_vae and self.training:
             z = self._reparameterize(mu, logvar, self.age_disentanglement)
-            if self.decode_using_gt_age or self.conditional_vae:
-                z = self.change_age_latent(z, age)
         else:
             z = mu
     
