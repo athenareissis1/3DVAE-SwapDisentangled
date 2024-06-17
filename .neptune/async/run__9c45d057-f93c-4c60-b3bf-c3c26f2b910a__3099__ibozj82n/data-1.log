@@ -1,0 +1,12 @@
+{"obj": {"type": "AssignString", "path": ["sys", "name"], "value": "Untitled"}, "version": 1, "at": 1718300445.4330478}
+{"obj": {"type": "AssignString", "path": ["sys", "description"], "value": ""}, "version": 2, "at": 1718300445.4338896}
+{"obj": {"type": "AssignString", "path": ["monitoring", "15c0660c", "hostname"], "value": "Precision-7920-Tower-2"}, "version": 3, "at": 1718300445.4349608}
+{"obj": {"type": "AssignString", "path": ["sys", "hostname"], "value": "Precision-7920-Tower-2"}, "version": 4, "at": 1718300445.4351947}
+{"obj": {"type": "AssignString", "path": ["monitoring", "15c0660c", "pid"], "value": "3099"}, "version": 5, "at": 1718300445.4355757}
+{"obj": {"type": "AssignString", "path": ["monitoring", "15c0660c", "tid"], "value": "140379107959040"}, "version": 6, "at": 1718300445.4359372}
+{"obj": {"type": "AssignBool", "path": ["sys", "failed"], "value": false}, "version": 7, "at": 1718300445.4362397}
+{"obj": {"type": "ClearStringLog", "path": ["monitoring", "15c0660c", "stdout"]}, "version": 8, "at": 1718300445.4368222}
+{"obj": {"type": "ClearStringLog", "path": ["monitoring", "15c0660c", "stderr"]}, "version": 9, "at": 1718300445.4370704}
+{"obj": {"type": "AssignString", "path": ["source_code", "entrypoint"], "value": "test.py"}, "version": 10, "at": 1718300445.4382093}
+{"obj": {"type": "UploadFileSet", "path": ["source_code", "files"], "file_globs": ["/home/athena/3DVAE-AgeDisentangled_contrastive_loss/test.py"], "reset": "False"}, "version": 11, "at": 1718300445.4386039}
+{"obj": {"type": "UploadFile", "path": ["source_code", "diff"], "ext": "patch", "file_path": null, "tmp_file_name": "source_code_diff-1718300445.776674-2024-06-13_15.40.45.776674.patch", "clean_after_upload": false}, "version": 12, "at": 1718300445.7781765}

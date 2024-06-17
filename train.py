@@ -3,6 +3,7 @@ import argparse
 import shutil
 import tqdm
 import torch.nn
+import neptune
 from torch.utils.tensorboard import SummaryWriter
 
 import utils
@@ -20,6 +21,7 @@ parser.add_argument('--generate_data', action='store_true')
 parser.add_argument('--resume', action='store_true')
 opts = parser.parse_args()
 config = utils.get_config(opts.config)
+logging = utils.get_config("logging.yaml")
 
 if opts.id != 'none':
     model_name = opts.id
@@ -30,6 +32,12 @@ checkpoint_dir = utils.prepare_sub_folder(output_directory)
 
 writer = SummaryWriter(output_directory + '/logs')
 shutil.copy(opts.config, os.path.join(output_directory, 'config.yaml'))
+
+log = neptune.init_run(
+            project=logging['logging']['neptune_project'], 
+            api_token=logging['logging']['neptune_api'],
+            custom_run_id=os.path.basename(output_directory)
+            )
 
 if not torch.cuda.is_available():
     device = torch.device('cpu')
@@ -66,20 +74,24 @@ if opts.resume:
 else:
     start_epoch = 0
 
+manager.log_hyperparameters(log, config, logging)
+
 for epoch in tqdm.tqdm(range(start_epoch, config['optimization']['epochs'])):
     manager.run_epoch(train_loader, device, train=True)
-    manager.log_losses(writer, epoch, 'train')
+    manager.log_losses(writer, log, epoch, 'train')
 
     manager.run_epoch(validation_loader, device, train=False)
-    manager.log_losses(writer, epoch, 'validation')
+    manager.log_losses(writer, log, epoch, 'validation')
 
     if (epoch + 1) % config['logging_frequency']['tb_renderings'] == 0:
-        manager.log_images(train_visualization_batch, writer, epoch,
+        manager.log_images(train_visualization_batch, writer, log, epoch,
                            normalization_dict, 'train', error_max_scale=2)
-        manager.log_images(validation_visualization_batch, writer, epoch,
+        manager.log_images(validation_visualization_batch, writer, log, epoch,
                            normalization_dict, 'validation', error_max_scale=2)
     if (epoch + 1) % config['logging_frequency']['save_weights'] == 0:
         manager.save_weights(checkpoint_dir, epoch)
 
+log.stop()
+
 Tester(manager, normalization_dict, train_loader, validation_loader, test_loader,
-       output_directory, config)()
+       output_directory, config, logging)()

@@ -63,6 +63,7 @@ model:
   contrastive_loss: True                                                        # if True, contrastive loss is used
   age_disentanglement: True                                                     # if True, an extra feature is added to the latent vector that represents age & age related losses are added
   intermediate_layers: True                                                    # if True, intermediate layers are used
+  intermediate_layers_count: 2                                                 # number of intermediate layers
   intermediate_layer_size: 120                                                 # size of the intermediate layers
 
 logging_frequency:

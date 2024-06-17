@@ -1,0 +1,391 @@
+diff --git a/configurations/sd_babies_faces.yaml b/configurations/sd_babies_faces.yaml
+index cbb98fd..3affcd0 100644
+--- a/configurations/sd_babies_faces.yaml
++++ b/configurations/sd_babies_faces.yaml
+@@ -68,6 +68,8 @@ model:
+ logging_frequency:
+   tb_renderings: 50
+   save_weights: 200
++  naptune_project: athenareissis/age-disentanglement
++  naptune_api: eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiI2YmMxMGIyMC02NTkyLTQ5ZDYtOGUwYy1hYWQwMWJhMDM0N2IifQ==
+ 
+ testing:
+   age_latent_changing: [0, 0.00, 4.00, 8.00, 12.00, 17.00]                               # first value will always change to what the original latent age value is
+diff --git a/model_manager.py b/model_manager.py
+index 3f9c5f5..13f46a6 100644
+--- a/model_manager.py
++++ b/model_manager.py
+@@ -394,42 +394,6 @@ class ModelManager(torch.nn.Module):
+         return lambda_offdiag * torch.sum(cov_offdiag ** 2) + \
+             lambda_diag * torch.sum((cov_diag - 1) ** 2)
+ 
+-    def _compute_latent_consistency(self, z, swapped_feature):
+-        bs = self._optimization_params['batch_size']
+-        eta1 = self._optimization_params['latent_consistency_eta1']
+-        eta2 = self._optimization_params['latent_consistency_eta2']
+-        latent_region = self._latent_regions[swapped_feature]
+-        if self._age_disentanglement:
+-            z = z[:, :-1]
+-        z_feature = z[:, latent_region[0]:latent_region[1]].view(bs, bs, -1)
+-        z_else = torch.cat([z[:, :latent_region[0]],
+-                            z[:, latent_region[1]:]], dim=1).view(bs, bs, -1)
+-        triu_indices = torch.triu_indices(
+-            z_feature.shape[0], z_feature.shape[0], 1)
+-
+-        lg = z_feature.unsqueeze(0) - z_feature.unsqueeze(1)
+-        lg = lg[triu_indices[0], triu_indices[1], :, :].reshape(-1,
+-                                                                lg.shape[-1])
+-        lg = torch.sum(lg ** 2, dim=-1)
+-
+-        dg = z_feature.permute(1, 2, 0).unsqueeze(0) - \
+-            z_feature.permute(1, 2, 0).unsqueeze(1)
+-        dg = dg[triu_indices[0], triu_indices[1], :, :].permute(0, 2, 1)
+-        dg = torch.sum(dg.reshape(-1, dg.shape[-1]) ** 2, dim=-1)
+-
+-        dr = z_else.unsqueeze(0) - z_else.unsqueeze(1)
+-        dr = dr[triu_indices[0], triu_indices[1], :, :].reshape(-1,
+-                                                                dr.shape[-1])
+-        dr = torch.sum(dr ** 2, dim=-1)
+-
+-        lr = z_else.permute(1, 2, 0).unsqueeze(0) - \
+-            z_else.permute(1, 2, 0).unsqueeze(1)
+-        lr = lr[triu_indices[0], triu_indices[1], :, :].permute(0, 2, 1)
+-        lr = torch.sum(lr.reshape(-1, lr.shape[-1]) ** 2, dim=-1)
+-        zero = torch.tensor(0, device=z.device)
+-        return (1 / (bs ** 3 - bs ** 2)) * \
+-               (torch.sum(torch.max(zero, lr - dr + eta2)) +
+-                torch.sum(torch.max(zero, lg - dg + eta1)))
+     
+     # takes in reg and gt_ages if contrastive loss and mu and gt_ages if not
+     def _compute_age_loss(self, age_latent, gt_age):
+diff --git a/test.py b/test.py
+index ba1ff64..e67ae4a 100644
+--- a/test.py
++++ b/test.py
+@@ -3,7 +3,7 @@ import json
+ import pickle
+ import tqdm
+ import trimesh
+-import torch.nn
++import torch
+ import pytorch3d.loss
+ import random
+ 
+@@ -11,23 +11,33 @@ import numpy as np
+ import pandas as pd
+ import seaborn as sns
+ import matplotlib.pyplot as plt
++import neptune
++import torch.nn as nn
++import torch.optim as optim
+ from torchvision.io import write_video
+ from torchvision.utils import make_grid, save_image
++from torch.utils.data import DataLoader, TensorDataset
+ from pytorch3d.renderer import BlendParams
+ from pytorch3d.loss.point_mesh_distance import point_face_distance
+ from pytorch3d.loss.chamfer import _handle_pointcloud_input
+ from pytorch3d.ops.knn import knn_points
+ 
++
+ from sklearn.neural_network import MLPRegressor
+ from sklearn.preprocessing import StandardScaler
+ 
+ from evaluation_metrics import compute_all_metrics, jsd_between_point_cloud_sets
+ 
+-
+ class Tester:
+     def __init__(self, model_manager, norm_dict,
+                  train_load, val_load, test_load, out_dir, config):
+     
++        self.log = neptune.init_run(
++            project=config['logging_frequency']['naptune_project'], 
++            api_token=config['logging_frequency']['naptune_api'],
++            custom_run_id=os.path.basename(out_dir)
++            )
++
+         self._manager = model_manager
+         self._manager.eval()
+         self._device = model_manager.device
+@@ -81,17 +91,17 @@ class Tester:
+         #     json.dump(metrics, outfile)
+ 
+         # TEST TO RUN (run all on val set then once model is finalised move to test set)
+-        self.set_renderings_size(512)
+-        self.set_rendering_background_color([1, 1, 1])
+-        self.per_variable_range_experiments(use_z_stats=False)
+-        self.random_generation_and_rendering(n_samples=16)
++        # self.set_renderings_size(512)
++        # self.set_rendering_background_color([1, 1, 1])
++        # self.per_variable_range_experiments(use_z_stats=False)
++        # self.random_generation_and_rendering(n_samples=16)
+ 
+         if self._config['model']['age_disentanglement']:
+-            self.age_encoder_check(self._train_loader, self._test_loader)
+-            self.dataset_age_split(self._train_loader, self._val_loader, self._test_loader)
++            # self.age_encoder_check(self._train_loader, self._test_loader)
++            # self.dataset_age_split(self._train_loader, self._val_loader, self._test_loader)
+             self.age_prediction_MLP(self._train_loader, self._test_loader)
+-            self.age_latent_changing(self._val_loader)
+-            self.age_prediction_encode_output(self._train_loader, self._val_loader)
++            # self.age_latent_changing(self._val_loader)
++            # self.age_prediction_encode_output(self._train_loader, self._val_loader)
+             
+ 
+     def _unnormalize_verts(self, verts, dev=None):
+@@ -1415,87 +1425,207 @@ class Tester:
+ 
+         return latents, ages
+ 
++
++###################################
+     
+ 
+-    def age_prediction_MLP(self, train_loader, val_loader):
++    # def age_prediction_MLP(self, train_loader, val_loader):
+ 
+-        """ 
++    #     """ 
+         
+-        This function uses an MLP to predict the age from the feature latents. 
+-        The feature z values are used for training that are generated by the VAE encoder. 
+-        The output is the average absolute difference between GT age and age predicted
++    #     This function uses an MLP to predict the age from the feature latents. 
++    #     The feature z values are used for training that are generated by the VAE encoder. 
++    #     The output is the average absolute difference between GT age and age predicted
+ 
+-        Output: graph plotting predicted vs actual age along with the mean absolute difference 
++    #     Output: graph plotting predicted vs actual age along with the mean absolute difference 
+         
+-        """
++    #     """
+ 
+-        assert self._config['model']['age_disentanglement']
++    #     assert self._config['model']['age_disentanglement']
+ 
+-        # train_latents & val_latents are only the feature latents 
+-        # train_ages & val_ages are the ground truth ages
+-        train_latents, train_ages = self.process_data(train_loader)
+-        val_latents, val_ages = self.process_data(val_loader)
+-        # test_latents, test_ages = self.process_data(test_loader)
++    #     # train_latents & val_latents are only the feature latents 
++    #     # train_ages & val_ages are the ground truth ages
++    #     train_latents, train_ages = self.process_data(train_loader)
++    #     val_latents, val_ages = self.process_data(val_loader)
++    #     # test_latents, test_ages = self.process_data(test_loader)
+ 
+-        # all_latents = np.concatenate((train_latents, val_latents), axis=0)
+-        # all_ages = np.concatenate((train_ages, val_ages), axis=0)
++    #     # all_latents = np.concatenate((train_latents, val_latents), axis=0)
++    #     # all_ages = np.concatenate((train_ages, val_ages), axis=0)
+ 
+-        sc = StandardScaler()
+-        train_latents_scaled = sc.fit_transform(train_latents)
++    #     sc = StandardScaler()
++    #     train_latents_scaled = sc.fit_transform(train_latents)
++
++    #     mlp_reg = MLPRegressor(hidden_layer_sizes=(150, 100, 50),
++    #                         max_iter=300, activation='relu',
++    #                         solver='adam', early_stopping=True,
++    #                         validation_fraction=0.1, # % of data in validation set
++    #                         n_iter_no_change=10, # Number of iterations with no improvement to wait before stopping
++    #                         learning_rate_init=0.01,
++    #                         random_state=42)  # Set the random state for consistent results
++
++    #     mlp_reg.fit(train_latents_scaled, train_ages)
++
++    #     train_ages_pred = mlp_reg.predict(train_latents_scaled)
++    #     train_age_diff = abs(train_ages - train_ages_pred)
++    #     train_mean_age_diff = train_age_diff.mean()
++
++    #     val_latents_scaled = sc.transform(val_latents)
++    #     val_ages_pred = mlp_reg.predict(val_latents_scaled)
++    #     val_age_diff = abs(val_ages - val_ages_pred)
++    #     val_mean_age_diff = val_age_diff.mean()
++
++    #     # create a graph plotting the actual ages against MLP predicted ages on test set
++    #     age_range = self._config['data']['dataset_age_range']
++    #     min_age, max_age = map(int, age_range.split('-'))
++
++    #     plt.figure(figsize=(5, 5)) 
++
++    #     plt.clf()
++
++    #     plt.scatter(train_ages, train_ages_pred, color='yellow', marker='x', label='Train dataset')
++    #     plt.scatter(val_ages, val_ages_pred, color='green', label='Test dataset')
++    #     plt.plot([0, max_age], [0, max_age], 'r--')
++
++    #     plt.title('Age prediction on feature latents')
++    #     plt.xlabel('Ground truth age (years)')
++    #     plt.ylabel('Predicted age (years)')
+ 
+-        # mlp_reg = MLPRegressor(hidden_layer_sizes=(150, 100, 50),
+-        #                     max_iter=300, activation='relu',
+-        #                     solver='adam', early_stopping=True,
+-        #                     validation_fraction=0.1, # % of data in validation set
+-        #                     n_iter_no_change=10, # Number of iterations with no improvement to wait before stopping
+-        #                     learning_rate_init=0.01)
++    #     plt.text(0.25, 0.1, f'Mean absolute difference (train) = {round(train_mean_age_diff.item(), 2)} years', transform=plt.gca().transAxes)
++    #     plt.text(0.25, 0.05, f'Mean absolute difference (test) = {round(val_mean_age_diff.item(), 2)} years', transform=plt.gca().transAxes)
+ 
+-        mlp_reg = MLPRegressor(hidden_layer_sizes=(150, 100, 50),
+-                            max_iter=300, activation='relu',
+-                            solver='adam', early_stopping=True,
+-                            validation_fraction=0.1, # % of data in validation set
+-                            n_iter_no_change=10, # Number of iterations with no improvement to wait before stopping
+-                            learning_rate_init=0.01,
+-                            random_state=42)  # Set the random state for consistent results
++    #     plt.legend(loc='upper left')
+ 
+-        mlp_reg.fit(train_latents_scaled, train_ages)
++    #     plt.xticks(range(0, 18))
++    #     plt.yticks(range(0, 18))
+ 
+-        train_ages_pred = mlp_reg.predict(train_latents_scaled)
+-        train_age_diff = abs(train_ages - train_ages_pred)
+-        train_mean_age_diff = train_age_diff.mean()
++    #     plt.savefig(os.path.join(self._out_dir, f'mlp_age_prediciton_{age_range}.png'))
++    #     plt.savefig(os.path.join(self._out_dir, f'mlp_age_prediciton_{age_range}.svg'))
+ 
++
++    def set_seed(self, seed):
++        random.seed(seed)
++        np.random.seed(seed)
++        torch.manual_seed(seed)
++        torch.cuda.manual_seed(seed)
++        torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
++        torch.backends.cudnn.deterministic = True
++        torch.backends.cudnn.benchmark = False
++
++    def age_prediction_MLP(self, train_loader, val_loader):
++        assert self._config['model']['age_disentanglement']
++
++        file_name = f'mlp_age_prediction_{age_range}.png'
++        file_path = os.path.join(self._out_dir, file_name)
++
++        self.log['test/MLP'].upload(file_path)
++        self.log.stop()
++
++        # Process data
++        train_latents, train_ages = self.process_data(train_loader)
++        val_latents, val_ages = self.process_data(val_loader)
++
++        # Standardize data
++        sc = StandardScaler()
++        train_latents_scaled = sc.fit_transform(train_latents)
+         val_latents_scaled = sc.transform(val_latents)
+-        val_ages_pred = mlp_reg.predict(val_latents_scaled)
+-        val_age_diff = abs(val_ages - val_ages_pred)
+-        val_mean_age_diff = val_age_diff.mean()
+ 
+-        # create a graph plotting the actual ages against MLP predicted ages on test set
++        # Convert to torch tensors
++        X_train_tensor = torch.tensor(train_latents_scaled, dtype=torch.float32)
++        y_train_tensor = torch.tensor(train_ages, dtype=torch.float32).view(-1, 1)
++        X_val_tensor = torch.tensor(val_latents_scaled, dtype=torch.float32)
++        y_val_tensor = torch.tensor(val_ages, dtype=torch.float32).view(-1, 1)
++
++        # Set seeds for reproducibility
++        self.set_seed(42)
++
++        # Create DataLoader
++        train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
++        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
++
++        # Define the MLP model, loss function, and optimizer
++        model = nn.Sequential(
++            nn.Linear(45, 150),
++            nn.ReLU(),
++            nn.Linear(150, 100),
++            nn.ReLU(),
++            nn.Linear(100, 50),
++            nn.ReLU(),
++            nn.Linear(50, 1)
++        )
++        criterion = nn.MSELoss()
++        optimizer = optim.Adam(model.parameters(), lr=0.001)
++
++        # Train the model
++        def train_model(model, criterion, optimizer, dataloader, epochs=300):
++            model.train()
++            losses = []
++            for epoch in range(epochs):
++                for inputs, targets in dataloader:
++                    optimizer.zero_grad()
++                    outputs = model(inputs)
++                    loss = criterion(outputs, targets)
++                    loss.backward()
++                    losses.append(loss.item())
++                    optimizer.step()
++                if epoch % 10 == 0:
++                    print(f'Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4f}')
++                self.log['test/MLP_loss'].log(loss.item())
++            return losses
++
++        losses = train_model(model, criterion, optimizer, train_loader)
++
++        # Plot the losses
++        plt.figure()
++        plt.clf()
++        plt.plot(losses)
++        plt.title('Training Loss')
++        plt.xlabel('Epoch')
++        plt.ylabel('Loss')
++        plt.grid(True)
++
++        plt.savefig(os.path.join(self._out_dir, 'training_loss.png'))
++
++        # Evaluate the model
++        def evaluate_model(model, X, y):
++            model.eval()
++            with torch.no_grad():
++                predictions = model(X).view(-1)
++                mae = torch.mean(torch.abs(predictions - y.squeeze_(1)))
++            return predictions.numpy(), mae.item()
++
++        train_ages_pred, train_mean_age_diff = evaluate_model(model, X_train_tensor, y_train_tensor)
++        val_ages_pred, val_mean_age_diff = evaluate_model(model, X_val_tensor, y_val_tensor)
++
++        # Plot the results
+         age_range = self._config['data']['dataset_age_range']
+         min_age, max_age = map(int, age_range.split('-'))
+ 
+-        plt.figure(figsize=(5, 5)) 
+-
++        plt.figure(figsize=(5, 5))
+         plt.clf()
+-
+         plt.scatter(train_ages, train_ages_pred, color='yellow', marker='x', label='Train dataset')
+-        plt.scatter(val_ages, val_ages_pred, color='green', label='Test dataset')
++        plt.scatter(val_ages, val_ages_pred, color='green', label='Validation dataset')
+         plt.plot([0, max_age], [0, max_age], 'r--')
+ 
+         plt.title('Age prediction on feature latents')
+         plt.xlabel('Ground truth age (years)')
+         plt.ylabel('Predicted age (years)')
+-
+-        plt.text(0.25, 0.1, f'Mean absolute difference (train) = {round(train_mean_age_diff.item(), 2)} years', transform=plt.gca().transAxes)
+-        plt.text(0.25, 0.05, f'Mean absolute difference (test) = {round(val_mean_age_diff.item(), 2)} years', transform=plt.gca().transAxes)
+-
++        plt.text(0.25, 0.1, f'Mean absolute difference (train) = {round(train_mean_age_diff, 2)} years', transform=plt.gca().transAxes)
++        plt.text(0.25, 0.05, f'Mean absolute difference (val) = {round(val_mean_age_diff, 2)} years', transform=plt.gca().transAxes)
+         plt.legend(loc='upper left')
+-
+         plt.xticks(range(0, 18))
+         plt.yticks(range(0, 18))
+ 
+-        plt.savefig(os.path.join(self._out_dir, f'mlp_age_prediciton_{age_range}.png'))
+-        plt.savefig(os.path.join(self._out_dir, f'mlp_age_prediciton_{age_range}.svg'))
++        file_name = f'mlp_age_prediction_{age_range}.png'
++        file_path = os.path.join(self._out_dir, file_name)
++
++        plt.savefig(file_path)
++        # plt.savefig(file_path)
++
++        self.log['test/MLP_age_prediction'].upload(file_name)
++
++        self.log.stop()
+ 
++##########################
+ 
+     @staticmethod
+     def vector_linspace(start, finish, steps):

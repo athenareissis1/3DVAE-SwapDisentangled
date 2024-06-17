@@ -28,3 +28,5 @@ precomputed_cvpr/
 .vscode/
 
 preprocessing_data/
+
+logging.yaml

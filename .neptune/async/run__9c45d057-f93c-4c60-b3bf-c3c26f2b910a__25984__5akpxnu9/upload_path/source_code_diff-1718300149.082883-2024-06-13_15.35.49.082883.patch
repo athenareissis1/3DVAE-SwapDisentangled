@@ -1,0 +1,754 @@
+diff --git a/configurations/sd_babies_faces.yaml b/configurations/sd_babies_faces.yaml
+index cbb98fd..340c1c2 100644
+--- a/configurations/sd_babies_faces.yaml
++++ b/configurations/sd_babies_faces.yaml
+@@ -14,7 +14,7 @@ data:
+   swap_features: True                                                           # if True, the resulting batch size will be batch_size^2
+   
+ optimization:
+-  epochs: 600
++  epochs: 10 #600
+   batch_size: 4                                                                 # if swap_features=True, the resulting batch size will be batch_size^2
+   lr: 1e-4
+   weight_decay: 0
+@@ -66,8 +66,11 @@ model:
+   intermediate_layer_size: 120                                                 # size of the intermediate layers
+ 
+ logging_frequency:
+-  tb_renderings: 50
+-  save_weights: 200
++  tb_renderings: 5 #50
++  save_weights: 2 #200
++  naptune_project: athenareissis/age-disentanglement
++  naptune_api: eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiI2YmMxMGIyMC02NTkyLTQ5ZDYtOGUwYy1hYWQwMWJhMDM0N2IifQ==
++  neptune_logging_hyperparameters: [data:dataset_type, data:dataset_age_range, data:swap_features, optimization:epochs, optimization:laplacian_weight, optimization:kl_weight, optimization:latent_consistency_weight, optimization:age_weight, optimization:contrastive_weight, optimization:contrastive_loss_temp, optimization:contrastive_loss_threshold, model:latent_size, model:age_latent_size, model:contrastive_loss, model:age_disentanglement, model:intermediate_layers, model:intermediate_layer_size]
+ 
+ testing:
+   age_latent_changing: [0, 0.00, 4.00, 8.00, 12.00, 17.00]                               # first value will always change to what the original latent age value is
+diff --git a/model.py b/model.py
+index a75b333..a701f22 100644
+--- a/model.py
++++ b/model.py
+@@ -133,43 +133,43 @@ class Model(nn.Module):
+ 
+             #########
+ 
+-            # WITH TWO INTERMEDIATE STEPS
++            # # WITH TWO INTERMEDIATE STEPS
+ 
+-            # intermediate layer for mu and logvar (lower dimentional - same size and mu and logvar)
+-            if self.age_disentanglement:
+-                self.intermediate = LinearLayer(self.inter_layer_size, latent_size-1)
+-            else:
+-                self.intermediate = LinearLayer(self.inter_layer_size, latent_size)
+-
+-            self.mu_logvar = nn.ModuleList()
+-
+-            # get mu and logvar from lower dimenational linear layer 
+-            if self.age_disentanglement:
+-                self.mu_logvar.append(nn.Linear(latent_size-1, latent_size-1))
+-            else:
+-                self.mu_logvar.append(nn.Linear(latent_size, latent_size))
+-            
+-            if self.is_vae:
+-                if self.age_disentanglement:
+-                    self.mu_logvar.append(nn.Linear(latent_size-1, latent_size-1))
+-                else:
+-                    self.mu_logvar.append(nn.Linear(latent_size, latent_size))
+-
+-            # # WITH ONE INTERMEDIATE STEPS
++            # # intermediate layer for mu and logvar (lower dimentional - same size and mu and logvar)
++            # if self.age_disentanglement:
++            #     self.intermediate = LinearLayer(self.inter_layer_size, latent_size-1)
++            # else:
++            #     self.intermediate = LinearLayer(self.inter_layer_size, latent_size)
+ 
+             # self.mu_logvar = nn.ModuleList()
+ 
+-            # # first branch to get mu and logvar
++            # # get mu and logvar from lower dimenational linear layer 
+             # if self.age_disentanglement:
+-            #     self.mu_logvar.append(nn.Linear(self.inter_layer_size, latent_size-1))
++            #     self.mu_logvar.append(nn.Linear(latent_size-1, latent_size-1))
+             # else:
+-            #     self.mu_logvar.append(nn.Linear(self.inter_layer_size, latent_size))
++            #     self.mu_logvar.append(nn.Linear(latent_size, latent_size))
+             
+             # if self.is_vae:
+             #     if self.age_disentanglement:
+-            #         self.mu_logvar.append(nn.Linear(self.inter_layer_size, latent_size-1))
++            #         self.mu_logvar.append(nn.Linear(latent_size-1, latent_size-1))
+             #     else:
+-            #         self.mu_logvar.append(nn.Linear(self.inter_layer_size, latent_size))
++            #         self.mu_logvar.append(nn.Linear(latent_size, latent_size))
++
++            # WITH ONE INTERMEDIATE STEPS
++
++            self.mu_logvar = nn.ModuleList()
++
++            # first branch to get mu and logvar
++            if self.age_disentanglement:
++                self.mu_logvar.append(nn.Linear(self.inter_layer_size, latent_size-1))
++            else:
++                self.mu_logvar.append(nn.Linear(self.inter_layer_size, latent_size))
++            
++            if self.is_vae:
++                if self.age_disentanglement:
++                    self.mu_logvar.append(nn.Linear(self.inter_layer_size, latent_size-1))
++                else:
++                    self.mu_logvar.append(nn.Linear(self.inter_layer_size, latent_size))
+ 
+             ##########
+             
+@@ -265,25 +265,25 @@ class Model(nn.Module):
+ 
+             #########
+ 
+-            # WITH TWO INTERMEDIATE STEP 
+-
+-            z_pre_2 = self.intermediate(z_pre)
++            # # WITH TWO INTERMEDIATE STEP 
+ 
+-            mu = self.mu_logvar[-1](z_pre_2)
+-            if self.is_vae:
+-                logvar = self.mu_logvar[-2](z_pre_2)
+-            else:
+-                mu = torch.sigmoid(mu)
+-                logvar = None
+-        
+-            # # WITH ONE INTERMEDIATE STEP
++            # z_pre_2 = self.intermediate(z_pre)
+ 
+-            # mu = self.mu_logvar[-1](z_pre)
++            # mu = self.mu_logvar[-1](z_pre_2)
+             # if self.is_vae:
+-            #     logvar = self.mu_logvar[-2](z_pre)
++            #     logvar = self.mu_logvar[-2](z_pre_2)
+             # else:
+             #     mu = torch.sigmoid(mu)
+             #     logvar = None
++        
++            # WITH ONE INTERMEDIATE STEP
++
++            mu = self.mu_logvar[-1](z_pre)
++            if self.is_vae:
++                logvar = self.mu_logvar[-2](z_pre)
++            else:
++                mu = torch.sigmoid(mu)
++                logvar = None
+ 
+             #########
+ 
+diff --git a/model_manager.py b/model_manager.py
+index 3f9c5f5..77121b3 100644
+--- a/model_manager.py
++++ b/model_manager.py
+@@ -2,6 +2,8 @@ import os
+ import pickle
+ import torch.nn
+ import trimesh
++import neptune
++import numpy as np
+ 
+ from torch.nn.functional import cross_entropy
+ from torchvision.transforms import ToPILImage
+@@ -487,14 +489,16 @@ class ModelManager(torch.nn.Module):
+         for k in self.loss_keys:
+             self._losses[k] /= value
+ 
+-    def log_losses(self, writer, epoch, phase='train'):
++    def log_losses(self, writer, nept_log, epoch, phase='train'):
+         for k in self.loss_keys:
+             loss = self._losses[k]
+             loss = loss.item() if torch.is_tensor(loss) else loss
+             writer.add_scalar(
+                 phase + '/' + str(k), loss, epoch + 1)
++            nept_log[phase + '/' + str(k)].log((loss))#, epoch + 1))
++            # nept_log[phase + '/' + str(k)].assign(loss, step=epoch)
+ 
+-    def log_images(self, in_data, writer, epoch, normalization_dict=None,
++    def log_images(self, in_data, writer, nept_log, epoch, normalization_dict=None,
+                    phase='train', error_max_scale=5):
+         gt_meshes = in_data.x.to(self._rend_device)
+         out_meshes = self.forward(in_data.to(self.device))[0]
+@@ -516,6 +520,13 @@ class ModelManager(torch.nn.Module):
+         log = make_grid(log, padding=10, pad_value=1, nrow=self._out_grid_size)
+         writer.add_image(tag=phase, global_step=epoch + 1, img_tensor=log)
+ 
++        # Convert the tensor to a PIL Image and then to a numpy array
++        img = ToPILImage()(log.cpu())
++        img_np = np.array(img)
++
++        # Log the image to Neptune
++        nept_log[phase + '/images'].log(neptune.types.File.as_image(img_np))
++
+     def _create_renderer(self, img_size=256):
+         raster_settings = RasterizationSettings(image_size=img_size)
+         renderer = MeshRenderer(
+@@ -602,7 +613,17 @@ class ModelManager(torch.nn.Module):
+         self._optimizer.load_state_dict(state_dict['optimizer'])
+         print(f"Resume from epoch {epochs}")
+         return epochs
++    
++    def log_hyperparameters(self, log, config):
++        if config['model']['age_disentanglement']:
++            config['model']['latent_size'] -= config['model']['age_latent_size']
++
++        hyperparameters = config['logging_frequency']['neptune_logging_hyperparameters']
+ 
++        for hyperparameter in hyperparameters:
++            group, variable = hyperparameter.split(':')
++            value = config[group][variable]
++            log[variable] = value
+ 
+ class ShadelessShader(torch.nn.Module):
+     def __init__(self, blend_params=None):
+diff --git a/test.py b/test.py
+index ba1ff64..cc5063c 100644
+--- a/test.py
++++ b/test.py
+@@ -3,7 +3,7 @@ import json
+ import pickle
+ import tqdm
+ import trimesh
+-import torch.nn
++import torch
+ import pytorch3d.loss
+ import random
+ 
+@@ -11,23 +11,33 @@ import numpy as np
+ import pandas as pd
+ import seaborn as sns
+ import matplotlib.pyplot as plt
++import neptune
++import torch.nn as nn
++import torch.optim as optim
+ from torchvision.io import write_video
+ from torchvision.utils import make_grid, save_image
++from torch.utils.data import DataLoader, TensorDataset
+ from pytorch3d.renderer import BlendParams
+ from pytorch3d.loss.point_mesh_distance import point_face_distance
+ from pytorch3d.loss.chamfer import _handle_pointcloud_input
+ from pytorch3d.ops.knn import knn_points
+ 
++
+ from sklearn.neural_network import MLPRegressor
+ from sklearn.preprocessing import StandardScaler
+ 
+ from evaluation_metrics import compute_all_metrics, jsd_between_point_cloud_sets
+ 
+-
+ class Tester:
+     def __init__(self, model_manager, norm_dict,
+                  train_load, val_load, test_load, out_dir, config):
+     
++        self.log = neptune.init_run(
++            project=config['logging_frequency']['naptune_project'], 
++            api_token=config['logging_frequency']['naptune_api'],
++            custom_run_id=os.path.basename(out_dir)
++            )
++
+         self._manager = model_manager
+         self._manager.eval()
+         self._device = model_manager.device
+@@ -80,18 +90,20 @@ class Tester:
+         # with open(outfile_path, 'w') as outfile:
+         #     json.dump(metrics, outfile)
+ 
+-        # TEST TO RUN (run all on val set then once model is finalised move to test set)
+-        self.set_renderings_size(512)
+-        self.set_rendering_background_color([1, 1, 1])
+-        self.per_variable_range_experiments(use_z_stats=False)
+-        self.random_generation_and_rendering(n_samples=16)
++        # # TEST TO RUN (run all on val set then once model is finalised move to test set)
++        # self.set_renderings_size(512)
++        # self.set_rendering_background_color([1, 1, 1])
++        # self.per_variable_range_experiments(use_z_stats=False)
++        # self.random_generation_and_rendering(n_samples=16)
+ 
+         if self._config['model']['age_disentanglement']:
+-            self.age_encoder_check(self._train_loader, self._test_loader)
+-            self.dataset_age_split(self._train_loader, self._val_loader, self._test_loader)
++            # self.age_encoder_check(self._train_loader, self._test_loader)
++            # self.dataset_age_split(self._train_loader, self._val_loader, self._test_loader)
+             self.age_prediction_MLP(self._train_loader, self._test_loader)
+-            self.age_latent_changing(self._val_loader)
+-            self.age_prediction_encode_output(self._train_loader, self._val_loader)
++            # self.age_latent_changing(self._val_loader)
++            # self.age_prediction_encode_output(self._train_loader, self._val_loader)
++        
++        self.log.stop()
+             
+ 
+     def _unnormalize_verts(self, verts, dev=None):
+@@ -188,9 +200,9 @@ class Tester:
+             all_frames.append(
+                 torch.cat([frames, torch.zeros_like(frames)[:2, ::]]))
+ 
+-        write_video(
+-            os.path.join(self._out_dir, 'latent_exploration.mp4'),
+-            torch.cat(all_frames, dim=0).permute(0, 2, 3, 1) * 255, fps=4)
++        file_path = os.path.join(self._out_dir, 'latent_exploration.mp4')
++        write_video(file_path, torch.cat(all_frames, dim=0).permute(0, 2, 3, 1) * 255, fps=4)
++        self.log['test/latent_exploration.mp4'].upload(file_path)
+ 
+         # Same video as before, but effects of perturbing each latent variables
+         # are shown in the same frame. Only error maps are shown.
+@@ -207,9 +219,10 @@ class Tester:
+                           pad_value=1, nrow=grid_nrows))
+         save_image(grid_frames[-1],
+                    os.path.join(self._out_dir, 'latent_exploration_tiled.png'))
+-        write_video(
+-            os.path.join(self._out_dir, 'latent_exploration_tiled.mp4'),
+-            torch.stack(grid_frames, dim=0).permute(0, 2, 3, 1) * 255, fps=1)
++        self.log['test/latent_exploration_tiled.png'].upload(os.path.join(self._out_dir, 'latent_exploration_tiled.png'))
++        file_path = os.path.join(self._out_dir, 'latent_exploration_tiled.mp4')
++        write_video(file_path, torch.stack(grid_frames, dim=0).permute(0, 2, 3, 1) * 255, fps=1)
++        self.log['test/latent_exploration_tiled.mp4'].upload(file_path)
+ 
+         # Same as before, but only output meshes are used
+         stacked_frames_meshes = torch.stack(all_renderings)
+@@ -218,9 +231,9 @@ class Tester:
+             grid_frames_m.append(
+                 make_grid(stacked_frames_meshes[:, i, ::], padding=10,
+                           pad_value=1, nrow=grid_nrows))
+-        write_video(
+-            os.path.join(self._out_dir, 'latent_exploration_outs_tiled.mp4'),
+-            torch.stack(grid_frames_m, dim=0).permute(0, 2, 3, 1) * 255, fps=4)
++        file_path = os.path.join(self._out_dir, 'latent_exploration_outs_tiled.mp4')
++        write_video(file_path, torch.stack(grid_frames_m, dim=0).permute(0, 2, 3, 1) * 255, fps=4)
++        self.log['test/latent_exploration_outs_tiled.mp4'].upload(file_path)
+ 
+         # Create a plot showing the effects of perturbing latent variables in
+         # each region of the face
+@@ -241,10 +254,12 @@ class Tester:
+ 
+         grid.map(plt.plot, "z_var", "mean_dist", marker="o")
+         plt.savefig(os.path.join(self._out_dir, 'latent_exploration_split.svg'))
++        self.log['test/latent_exploration_split.svg'].upload(os.path.join(self._out_dir, 'latent_exploration_split.svg'))
+ 
+         sns.relplot(data=df, kind="line", x="z_var", y="mean_dist",
+                     hue="region", palette=palette)
+         plt.savefig(os.path.join(self._out_dir, 'latent_exploration.svg'))
++        self.log['test/latent_exploration.svg'].upload(os.path.join(self._out_dir, 'latent_exploration.svg'))
+ 
+     def random_latent(self, n_samples, z_range_multiplier=1):
+         if self._is_vae:  # sample from normal distribution if vae
+@@ -272,7 +287,9 @@ class Tester:
+         gen_verts = self.random_generation(n_samples, z_range_multiplier)
+         renderings = self._manager.render(gen_verts).cpu()
+         grid = make_grid(renderings, padding=10, pad_value=1)
+-        save_image(grid, os.path.join(self._out_dir, 'random_generation.png'))
++        file_path = os.path.join(self._out_dir, 'random_generation.png')
++        save_image(grid, file_path)
++        self.log['test/random_generation'].upload(file_path)
+ 
+     def random_generation_and_save(self, n_samples=16, z_range_multiplier=1):
+         out_mesh_dir = os.path.join(self._out_dir, 'random_meshes')
+@@ -943,23 +960,31 @@ class Tester:
+ 
+         # difference from original 
+         stacked_frames = torch.stack(z_all)
++        file_path = os.path.join(self._out_dir, f'age_latent_changing_original_{age_latent_ranges_original}.png')
+         grid = make_grid(stacked_frames, padding=padding_value, pad_value=1, nrow=grid_nrows) 
+-        save_image(grid, os.path.join(self._out_dir, f'age_latent_changing_original_{age_latent_ranges_original}.png'))
++        save_image(grid, file_path)
++        self.log[f'test/age_latent_changing_original_{age_latent_ranges_original}'].upload(file_path)
+ 
+         # difference from previous 
+         stacked_frames_prev = torch.stack(z_all_prev)
++        file_path = os.path.join(self._out_dir, f'age_latent_changing_previous_{age_latent_ranges_original}.png')
+         grid_prev = make_grid(stacked_frames_prev, padding=padding_value, pad_value=1, nrow=grid_nrows-1) 
+-        save_image(grid_prev, os.path.join(self._out_dir, f'age_latent_changing_previous_{age_latent_ranges_original}.png'))
++        save_image(grid_prev, file_path)
++        self.log[f'test/age_latent_changing_previous_{age_latent_ranges_original}'].upload(file_path)
+ 
+         # difference from first 
+         stacked_frames_first = torch.stack(z_all_first)
++        file_path = os.path.join(self._out_dir, f'age_latent_changing_first_{age_latent_ranges_original}.png')
+         grid_first = make_grid(stacked_frames_first, padding=padding_value, pad_value=1, nrow=grid_nrows-1) 
+-        save_image(grid_first, os.path.join(self._out_dir, f'age_latent_changing_first_{age_latent_ranges_original}.png'))
++        save_image(grid_first, file_path)
++        self.log[f'test/age_latent_changing_first_{age_latent_ranges_original}'].upload(file_path)
+ 
+         # difference from original 
+         stacked_frames_original = torch.stack(z_original)
++        file_path = os.path.join(self._out_dir, f'pre_post_model.png')
+         grid_original = make_grid(stacked_frames_original, padding=padding_value, pad_value=1, nrow=2) 
+-        save_image(grid_original, os.path.join(self._out_dir, f'pre_post_model.png'))
++        save_image(grid_original, file_path)
++        self.log['test/pre_post_model'].upload(file_path)
+ 
+         # ##################
+ 
+@@ -1077,8 +1102,11 @@ class Tester:
+         plt.xticks(range(0, 18))
+         plt.yticks(range(0, 18))
+ 
+-        plt.savefig(os.path.join(self._out_dir, f'age_encoder_check_{age_range}.png'))
+-        plt.savefig(os.path.join(self._out_dir, f'age_encoder_check_{age_range}.svg'))
++        file_path = os.path.join(self._out_dir, f'age_encoder_check_{age_range}.png')
++
++        plt.savefig(file_path)
++
++        self.log[f'test/age_encoder_check_{age_range}'].upload(file_path)
+ 
+         return average_diff
+ 
+@@ -1190,8 +1218,11 @@ class Tester:
+         plt.xticks(range(0, 18))
+         plt.yticks(range(0, 18))
+ 
+-        plt.savefig(os.path.join(self._out_dir, f'decoder_accuracy_random_{age_range}.png'))
+-        plt.savefig(os.path.join(self._out_dir, f'decoder_accuracy_random_{age_range}.svg'))
++        file_path = os.path.join(self._out_dir, f'decoder_accuracy_random_{age_range}.png')
++
++        plt.savefig(file_path)
++
++        self.log[f'test/decoder_accuracy_random_{age_range}'].upload(file_path)
+ 
+         plt.figure(figsize=(7, 7))
+ 
+@@ -1213,8 +1244,11 @@ class Tester:
+         plt.xticks(range(0, 18))
+         plt.yticks(range(0, 18))
+ 
+-        plt.savefig(os.path.join(self._out_dir, f'decoder_accuracy_original_{age_range}.png'))
+-        plt.savefig(os.path.join(self._out_dir, f'decoder_accuracy_original_{age_range}.svg'))
++        file_path = os.path.join(self._out_dir, f'decoder_accuracy_original_{age_range}.png')
++
++        plt.savefig(file_path)
++
++        self.log[f'test/decoder_accuracy_original_{age_range}'].upload(file_path)
+ 
+     def dataset_age_split(self, train_loader, val_loader, test_loader):
+ 
+@@ -1313,6 +1347,8 @@ class Tester:
+         else:
+             print(f"{storage_path} already exists.")
+ 
++        # self.log['dataset/distribution'].upload(storage_path)
++
+ 
+         # create age split for train, val & test graph if it does not already exist 
+ 
+@@ -1380,6 +1416,8 @@ class Tester:
+ 
+             plt.savefig(storage_path)
+ 
++        # self.log['dataset/distribution_split'].upload(storage_path)
++
+ 
+ 
+     def process_data(self, loader):
+@@ -1415,87 +1453,207 @@ class Tester:
+ 
+         return latents, ages
+ 
++
++###################################
+     
+ 
+-    def age_prediction_MLP(self, train_loader, val_loader):
++    # def age_prediction_MLP(self, train_loader, val_loader):
+ 
+-        """ 
++    #     """ 
+         
+-        This function uses an MLP to predict the age from the feature latents. 
+-        The feature z values are used for training that are generated by the VAE encoder. 
+-        The output is the average absolute difference between GT age and age predicted
++    #     This function uses an MLP to predict the age from the feature latents. 
++    #     The feature z values are used for training that are generated by the VAE encoder. 
++    #     The output is the average absolute difference between GT age and age predicted
+ 
+-        Output: graph plotting predicted vs actual age along with the mean absolute difference 
++    #     Output: graph plotting predicted vs actual age along with the mean absolute difference 
+         
+-        """
++    #     """
+ 
+-        assert self._config['model']['age_disentanglement']
++    #     assert self._config['model']['age_disentanglement']
+ 
+-        # train_latents & val_latents are only the feature latents 
+-        # train_ages & val_ages are the ground truth ages
+-        train_latents, train_ages = self.process_data(train_loader)
+-        val_latents, val_ages = self.process_data(val_loader)
+-        # test_latents, test_ages = self.process_data(test_loader)
++    #     # train_latents & val_latents are only the feature latents 
++    #     # train_ages & val_ages are the ground truth ages
++    #     train_latents, train_ages = self.process_data(train_loader)
++    #     val_latents, val_ages = self.process_data(val_loader)
++    #     # test_latents, test_ages = self.process_data(test_loader)
+ 
+-        # all_latents = np.concatenate((train_latents, val_latents), axis=0)
+-        # all_ages = np.concatenate((train_ages, val_ages), axis=0)
++    #     # all_latents = np.concatenate((train_latents, val_latents), axis=0)
++    #     # all_ages = np.concatenate((train_ages, val_ages), axis=0)
+ 
+-        sc = StandardScaler()
+-        train_latents_scaled = sc.fit_transform(train_latents)
++    #     sc = StandardScaler()
++    #     train_latents_scaled = sc.fit_transform(train_latents)
++
++    #     mlp_reg = MLPRegressor(hidden_layer_sizes=(150, 100, 50),
++    #                         max_iter=300, activation='relu',
++    #                         solver='adam', early_stopping=True,
++    #                         validation_fraction=0.1, # % of data in validation set
++    #                         n_iter_no_change=10, # Number of iterations with no improvement to wait before stopping
++    #                         learning_rate_init=0.01,
++    #                         random_state=42)  # Set the random state for consistent results
++
++    #     mlp_reg.fit(train_latents_scaled, train_ages)
+ 
+-        # mlp_reg = MLPRegressor(hidden_layer_sizes=(150, 100, 50),
+-        #                     max_iter=300, activation='relu',
+-        #                     solver='adam', early_stopping=True,
+-        #                     validation_fraction=0.1, # % of data in validation set
+-        #                     n_iter_no_change=10, # Number of iterations with no improvement to wait before stopping
+-        #                     learning_rate_init=0.01)
++    #     train_ages_pred = mlp_reg.predict(train_latents_scaled)
++    #     train_age_diff = abs(train_ages - train_ages_pred)
++    #     train_mean_age_diff = train_age_diff.mean()
+ 
+-        mlp_reg = MLPRegressor(hidden_layer_sizes=(150, 100, 50),
+-                            max_iter=300, activation='relu',
+-                            solver='adam', early_stopping=True,
+-                            validation_fraction=0.1, # % of data in validation set
+-                            n_iter_no_change=10, # Number of iterations with no improvement to wait before stopping
+-                            learning_rate_init=0.01,
+-                            random_state=42)  # Set the random state for consistent results
++    #     val_latents_scaled = sc.transform(val_latents)
++    #     val_ages_pred = mlp_reg.predict(val_latents_scaled)
++    #     val_age_diff = abs(val_ages - val_ages_pred)
++    #     val_mean_age_diff = val_age_diff.mean()
+ 
+-        mlp_reg.fit(train_latents_scaled, train_ages)
++    #     # create a graph plotting the actual ages against MLP predicted ages on test set
++    #     age_range = self._config['data']['dataset_age_range']
++    #     min_age, max_age = map(int, age_range.split('-'))
+ 
+-        train_ages_pred = mlp_reg.predict(train_latents_scaled)
+-        train_age_diff = abs(train_ages - train_ages_pred)
+-        train_mean_age_diff = train_age_diff.mean()
++    #     plt.figure(figsize=(5, 5)) 
+ 
++    #     plt.clf()
++
++    #     plt.scatter(train_ages, train_ages_pred, color='yellow', marker='x', label='Train dataset')
++    #     plt.scatter(val_ages, val_ages_pred, color='green', label='Test dataset')
++    #     plt.plot([0, max_age], [0, max_age], 'r--')
++
++    #     plt.title('Age prediction on feature latents')
++    #     plt.xlabel('Ground truth age (years)')
++    #     plt.ylabel('Predicted age (years)')
++
++    #     plt.text(0.25, 0.1, f'Mean absolute difference (train) = {round(train_mean_age_diff.item(), 2)} years', transform=plt.gca().transAxes)
++    #     plt.text(0.25, 0.05, f'Mean absolute difference (test) = {round(val_mean_age_diff.item(), 2)} years', transform=plt.gca().transAxes)
++
++    #     plt.legend(loc='upper left')
++
++    #     plt.xticks(range(0, 18))
++    #     plt.yticks(range(0, 18))
++
++    #     plt.savefig(os.path.join(self._out_dir, f'mlp_age_prediciton_{age_range}.png'))
++    #     plt.savefig(os.path.join(self._out_dir, f'mlp_age_prediciton_{age_range}.svg'))
++
++
++    def set_seed(self, seed):
++        random.seed(seed)
++        np.random.seed(seed)
++        torch.manual_seed(seed)
++        torch.cuda.manual_seed(seed)
++        torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
++        torch.backends.cudnn.deterministic = True
++        torch.backends.cudnn.benchmark = False
++
++    def age_prediction_MLP(self, train_loader, val_loader):
++        assert self._config['model']['age_disentanglement']
++
++        # try:
++        #     del self.log['test/MLP_loss']
++        # except KeyError:
++        #     print("The log 'test/MLP_loss' does not exist.")
++
++        if self.log.get('test/MLP_loss') is not None:
++            del self.log['test/MLP_loss']
++
++
++        # Process data
++        train_latents, train_ages = self.process_data(train_loader)
++        val_latents, val_ages = self.process_data(val_loader)
++
++        # Standardize data
++        sc = StandardScaler()
++        train_latents_scaled = sc.fit_transform(train_latents)
+         val_latents_scaled = sc.transform(val_latents)
+-        val_ages_pred = mlp_reg.predict(val_latents_scaled)
+-        val_age_diff = abs(val_ages - val_ages_pred)
+-        val_mean_age_diff = val_age_diff.mean()
+ 
+-        # create a graph plotting the actual ages against MLP predicted ages on test set
++        # Convert to torch tensors
++        X_train_tensor = torch.tensor(train_latents_scaled, dtype=torch.float32)
++        y_train_tensor = torch.tensor(train_ages, dtype=torch.float32).view(-1, 1)
++        X_val_tensor = torch.tensor(val_latents_scaled, dtype=torch.float32)
++        y_val_tensor = torch.tensor(val_ages, dtype=torch.float32).view(-1, 1)
++
++        # Set seeds for reproducibility
++        self.set_seed(42)
++
++        # Create DataLoader
++        train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
++        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
++
++        # Define the MLP model, loss function, and optimizer
++        model = nn.Sequential(
++            nn.Linear(45, 150),
++            nn.ReLU(),
++            nn.Linear(150, 100),
++            nn.ReLU(),
++            nn.Linear(100, 50),
++            nn.ReLU(),
++            nn.Linear(50, 1)
++        )
++        criterion = nn.MSELoss()
++        optimizer = optim.Adam(model.parameters(), lr=0.001)
++
++        # Train the model
++        def train_model(model, criterion, optimizer, dataloader, epochs=100):
++            model.train()
++            losses = []
++            for epoch in range(epochs):
++                for inputs, targets in dataloader:
++                    optimizer.zero_grad()
++                    outputs = model(inputs)
++                    loss = criterion(outputs, targets)
++                    loss.backward()
++                    losses.append(loss.item())
++                    optimizer.step()
++                if epoch % 10 == 0:
++                    print(f'Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4f}')
++                self.log['test/MLP_loss'].log(loss.item())
++                # self.log['test/MLP_loss'].assign(loss.item(), step=epoch)
++            return losses
++
++        losses = train_model(model, criterion, optimizer, train_loader)
++
++        # Plot the losses
++        plt.figure()
++        plt.clf()
++        plt.plot(losses)
++        plt.title('Training Loss')
++        plt.xlabel('Epoch')
++        plt.ylabel('Loss')
++        plt.grid(True)
++
++        # plt.savefig(os.path.join(self._out_dir, 'training_loss.png'))
++
++        # Evaluate the model
++        def evaluate_model(model, X, y):
++            model.eval()
++            with torch.no_grad():
++                predictions = model(X).view(-1)
++                mae = torch.mean(torch.abs(predictions - y.squeeze_(1)))
++            return predictions.numpy(), mae.item()
++
++        train_ages_pred, train_mean_age_diff = evaluate_model(model, X_train_tensor, y_train_tensor)
++        val_ages_pred, val_mean_age_diff = evaluate_model(model, X_val_tensor, y_val_tensor)
++
++        # Plot the results
+         age_range = self._config['data']['dataset_age_range']
+         min_age, max_age = map(int, age_range.split('-'))
+ 
+-        plt.figure(figsize=(5, 5)) 
+-
++        plt.figure(figsize=(5, 5))
+         plt.clf()
+-
+         plt.scatter(train_ages, train_ages_pred, color='yellow', marker='x', label='Train dataset')
+-        plt.scatter(val_ages, val_ages_pred, color='green', label='Test dataset')
++        plt.scatter(val_ages, val_ages_pred, color='green', label='Validation dataset')
+         plt.plot([0, max_age], [0, max_age], 'r--')
+ 
+         plt.title('Age prediction on feature latents')
+         plt.xlabel('Ground truth age (years)')
+         plt.ylabel('Predicted age (years)')
+-
+-        plt.text(0.25, 0.1, f'Mean absolute difference (train) = {round(train_mean_age_diff.item(), 2)} years', transform=plt.gca().transAxes)
+-        plt.text(0.25, 0.05, f'Mean absolute difference (test) = {round(val_mean_age_diff.item(), 2)} years', transform=plt.gca().transAxes)
+-
++        plt.text(0.25, 0.1, f'Mean absolute difference (train) = {round(train_mean_age_diff, 2)} years', transform=plt.gca().transAxes)
++        plt.text(0.25, 0.05, f'Mean absolute difference (val) = {round(val_mean_age_diff, 2)} years', transform=plt.gca().transAxes)
+         plt.legend(loc='upper left')
+-
+         plt.xticks(range(0, 18))
+         plt.yticks(range(0, 18))
+ 
+-        plt.savefig(os.path.join(self._out_dir, f'mlp_age_prediciton_{age_range}.png'))
+-        plt.savefig(os.path.join(self._out_dir, f'mlp_age_prediciton_{age_range}.svg'))
++        file_path = os.path.join(self._out_dir, f'mlp_age_prediction_{age_range}.png')
++
++        plt.savefig(file_path)
++
++        self.log['test/mlp_age_prediction'].upload(file_path)
+ 
++##########################
+ 
+     @staticmethod
+     def vector_linspace(start, finish, steps):
+diff --git a/train.py b/train.py
+index 080f9f4..60608a5 100644
+--- a/train.py
++++ b/train.py
+@@ -3,6 +3,7 @@ import argparse
+ import shutil
+ import tqdm
+ import torch.nn
++import neptune
+ from torch.utils.tensorboard import SummaryWriter
+ 
+ import utils
+@@ -31,6 +32,12 @@ checkpoint_dir = utils.prepare_sub_folder(output_directory)
+ writer = SummaryWriter(output_directory + '/logs')
+ shutil.copy(opts.config, os.path.join(output_directory, 'config.yaml'))
+ 
++log = neptune.init_run(
++            project=config['logging_frequency']['naptune_project'], 
++            api_token=config['logging_frequency']['naptune_api'],
++            custom_run_id=os.path.basename(output_directory)
++            )
++
+ if not torch.cuda.is_available():
+     device = torch.device('cpu')
+     print("GPU not available, running on CPU")
+@@ -66,20 +73,24 @@ if opts.resume:
+ else:
+     start_epoch = 0
+ 
++manager.log_hyperparameters(log, config)
++
+ for epoch in tqdm.tqdm(range(start_epoch, config['optimization']['epochs'])):
+     manager.run_epoch(train_loader, device, train=True)
+-    manager.log_losses(writer, epoch, 'train')
++    manager.log_losses(writer, log, epoch, 'train')
+ 
+     manager.run_epoch(validation_loader, device, train=False)
+-    manager.log_losses(writer, epoch, 'validation')
++    manager.log_losses(writer, log, epoch, 'validation')
+ 
+     if (epoch + 1) % config['logging_frequency']['tb_renderings'] == 0:
+-        manager.log_images(train_visualization_batch, writer, epoch,
++        manager.log_images(train_visualization_batch, writer, log, epoch,
+                            normalization_dict, 'train', error_max_scale=2)
+-        manager.log_images(validation_visualization_batch, writer, epoch,
++        manager.log_images(validation_visualization_batch, writer, log, epoch,
+                            normalization_dict, 'validation', error_max_scale=2)
+     if (epoch + 1) % config['logging_frequency']['save_weights'] == 0:
+         manager.save_weights(checkpoint_dir, epoch)
+ 
++log.stop()
++
+ Tester(manager, normalization_dict, train_loader, validation_loader, test_loader,
+        output_directory, config)()

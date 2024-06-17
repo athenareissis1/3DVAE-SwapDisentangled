@@ -2,6 +2,8 @@ import os
 import pickle
 import torch.nn
 import trimesh
+import neptune
+import numpy as np
 
 from torch.nn.functional import cross_entropy
 from torchvision.transforms import ToPILImage
@@ -41,6 +43,7 @@ class ModelManager(torch.nn.Module):
         self._contrastive_loss = configurations['model']['contrastive_loss']
         self._data_type = configurations['data']['dataset_type'].split("_", 1)[1]
         self._inter_layer = configurations['model']['intermediate_layers']
+        self._inter_layer_count = configurations['model']['intermediate_layer_count']
         self._inter_layer_size = configurations['model']['intermediate_layer_size']
 
         self.to_mm_const = configurations['data']['to_mm_constant']
@@ -61,6 +64,7 @@ class ModelManager(torch.nn.Module):
         self._net = Model(in_channels=self._model_params['in_channels'],
                           out_channels=self._model_params['out_channels'],
                           latent_size=self._model_params['latent_size'],
+                          inter_layer_count=self._inter_layer_count,
                           inter_layer_size=self._inter_layer_size,
                           spiral_indices=spirals_indices,
                           down_transform=down_transforms,
@@ -246,7 +250,6 @@ class ModelManager(torch.nn.Module):
             self._optimizer.zero_grad()
 
         data = data.to(device)
-        # reconstructed, z, mu, logvar, reg = self.forward(data)
         reconstructed, z, mu, logvar = self.forward(data)
         loss_recon = self.compute_mse_loss(reconstructed, data.x)
         loss_laplacian = self._compute_laplacian_regularizer(reconstructed)
@@ -267,12 +270,7 @@ class ModelManager(torch.nn.Module):
             loss_z_cons = torch.tensor(0, device=device)
 
         if self._age_disentanglement:
-            # changed from mu to reg as latent input if using contrastive loss 
             loss_age = self._compute_age_loss(mu, data.norm_age)
-            # if self._contrastive_loss:
-            #     loss_age = self._compute_age_loss(reg, data.norm_age)
-            # else:
-            #     loss_age = self._compute_age_loss(mu, data.norm_age)
         else:
             loss_age = torch.tensor(0, device=device)
 
@@ -431,11 +429,7 @@ class ModelManager(torch.nn.Module):
                (torch.sum(torch.max(zero, lr - dr + eta2)) +
                 torch.sum(torch.max(zero, lg - dg + eta1)))
     
-    # takes in reg and gt_ages if contrastive loss and mu and gt_ages if not
     def _compute_age_loss(self, age_latent, gt_age):
-        # only get age latent if using mu as latent input
-        # if not self._contrastive_loss:
-        #     age_latent = age_latent[:, -1]
         age_latent = age_latent[:, -1]
 
         if self._swap_feature:
@@ -443,21 +437,18 @@ class ModelManager(torch.nn.Module):
 
         gt_age = gt_age.to(dtype=torch.float32).squeeze()
 
-        # here is where they would have the reg value as the age_latent
         age_loss = self.compute_mse_loss(age_latent, gt_age)
 
         return age_loss
     
     def _compute_contrastive_loss(self, latent, gt_age):
 
-        #Regression Loss
         if self._swap_feature:
             latent = latent[self.batch_diagonal_idx]
         SNN_Loss_Reg = SNNRegLoss(self._optimization_params['contrastive_loss_temp'], self._optimization_params['contrastive_loss_threshold'])
         loss_snn_reg = SNN_Loss_Reg(latent, gt_age)
 
         return loss_snn_reg
-
 
     @staticmethod
     def _permute_latent_dims(latent_sample):
@@ -487,14 +478,15 @@ class ModelManager(torch.nn.Module):
         for k in self.loss_keys:
             self._losses[k] /= value
 
-    def log_losses(self, writer, epoch, phase='train'):
+    def log_losses(self, writer, nept_log, epoch, phase='train'):
         for k in self.loss_keys:
             loss = self._losses[k]
             loss = loss.item() if torch.is_tensor(loss) else loss
             writer.add_scalar(
                 phase + '/' + str(k), loss, epoch + 1)
+            nept_log[phase + '/' + str(k)].log((loss))
 
-    def log_images(self, in_data, writer, epoch, normalization_dict=None,
+    def log_images(self, in_data, writer, nept_log, epoch, normalization_dict=None,
                    phase='train', error_max_scale=5):
         gt_meshes = in_data.x.to(self._rend_device)
         out_meshes = self.forward(in_data.to(self.device))[0]
@@ -515,6 +507,11 @@ class ModelManager(torch.nn.Module):
         log = torch.cat([gt_renders, out_renders, errors_renders], dim=-1)
         log = make_grid(log, padding=10, pad_value=1, nrow=self._out_grid_size)
         writer.add_image(tag=phase, global_step=epoch + 1, img_tensor=log)
+
+        img = ToPILImage()(log.cpu())
+        img_np = np.array(img)
+
+        nept_log[phase + '/images'].log(neptune.types.File.as_image(img_np))
 
     def _create_renderer(self, img_size=256):
         raster_settings = RasterizationSettings(image_size=img_size)
@@ -602,7 +599,22 @@ class ModelManager(torch.nn.Module):
         self._optimizer.load_state_dict(state_dict['optimizer'])
         print(f"Resume from epoch {epochs}")
         return epochs
+    
+    def log_hyperparameters(self, log, config, logging):
+        if config['model']['age_disentanglement']:
+            latent_size = config['model']['latent_size'] - config['model']['age_latent_size']
+        else:
+            latent_size = config['model']['latent_size']
 
+        hyperparameters = logging['logging']['neptune_logging_hyperparameters']
+
+        for hyperparameter in hyperparameters:
+            group, variable = hyperparameter.split(':')
+            if variable == 'latent_size':
+                value = latent_size
+            else:
+                value = config[group][variable]
+            log[variable] = value
 
 class ShadelessShader(torch.nn.Module):
     def __init__(self, blend_params=None):

@@ -1,0 +1,26 @@
+{"obj": {"type": "AssignString", "path": ["sys", "name"], "value": "Untitled"}, "version": 1, "at": 1718638238.207161}
+{"obj": {"type": "AssignString", "path": ["sys", "description"], "value": ""}, "version": 2, "at": 1718638238.2077584}
+{"obj": {"type": "AssignString", "path": ["monitoring", "4968421e", "hostname"], "value": "Precision-7920-Tower-2"}, "version": 3, "at": 1718638238.2085125}
+{"obj": {"type": "AssignString", "path": ["sys", "hostname"], "value": "Precision-7920-Tower-2"}, "version": 4, "at": 1718638238.208718}
+{"obj": {"type": "AssignString", "path": ["monitoring", "4968421e", "pid"], "value": "18743"}, "version": 5, "at": 1718638238.2090745}
+{"obj": {"type": "AssignString", "path": ["monitoring", "4968421e", "tid"], "value": "139983889707264"}, "version": 6, "at": 1718638238.209424}
+{"obj": {"type": "AssignBool", "path": ["sys", "failed"], "value": false}, "version": 7, "at": 1718638238.209676}
+{"obj": {"type": "ClearStringLog", "path": ["monitoring", "4968421e", "stdout"]}, "version": 8, "at": 1718638238.2101483}
+{"obj": {"type": "ClearStringLog", "path": ["monitoring", "4968421e", "stderr"]}, "version": 9, "at": 1718638238.2103872}
+{"obj": {"type": "AssignString", "path": ["source_code", "entrypoint"], "value": "train.py"}, "version": 10, "at": 1718638238.2111263}
+{"obj": {"type": "UploadFileSet", "path": ["source_code", "files"], "file_globs": ["/home/athena/3DVAE-AgeDisentangled_contrastive_loss/train.py"], "reset": "False"}, "version": 11, "at": 1718638238.211464}
+{"obj": {"type": "UploadFile", "path": ["source_code", "diff"], "ext": "patch", "file_path": null, "tmp_file_name": "source_code_diff-1718638238.361255-2024-06-17_13.30.38.361255.patch", "clean_after_upload": false}, "version": 12, "at": 1718638238.3671513}
+{"obj": {"type": "ConfigFloatSeries", "path": ["monitoring", "4968421e", "cpu"], "min": 0.0, "max": 100.0, "unit": "%"}, "version": 13, "at": 1718638238.5957649}
+{"obj": {"type": "ClearFloatLog", "path": ["monitoring", "4968421e", "cpu"]}, "version": 14, "at": 1718638238.5962696}
+{"obj": {"type": "ConfigFloatSeries", "path": ["monitoring", "4968421e", "memory"], "min": 0.0, "max": 31.03635025024414, "unit": "GB"}, "version": 15, "at": 1718638238.597027}
+{"obj": {"type": "ClearFloatLog", "path": ["monitoring", "4968421e", "memory"]}, "version": 16, "at": 1718638238.5981648}
+{"obj": {"type": "ConfigFloatSeries", "path": ["monitoring", "4968421e", "gpu"], "min": 0.0, "max": 100.0, "unit": "%"}, "version": 17, "at": 1718638238.601149}
+{"obj": {"type": "ClearFloatLog", "path": ["monitoring", "4968421e", "gpu"]}, "version": 18, "at": 1718638238.6014495}
+{"obj": {"type": "ConfigFloatSeries", "path": ["monitoring", "4968421e", "gpu_memory"], "min": 0.0, "max": 15.89703369140625, "unit": "GB"}, "version": 19, "at": 1718638238.602085}
+{"obj": {"type": "ClearFloatLog", "path": ["monitoring", "4968421e", "gpu_memory"]}, "version": 20, "at": 1718638238.602262}
+{"obj": {"type": "LogFloats", "path": ["monitoring", "4968421e", "cpu"], "values": [{"value": 41.7, "step": null, "ts": 1718638238.6063738}]}, "version": 21, "at": 1718638238.632724}
+{"obj": {"type": "LogFloats", "path": ["monitoring", "4968421e", "memory"], "values": [{"value": 16.28116226196289, "step": null, "ts": 1718638238.6063738}]}, "version": 22, "at": 1718638238.6343265}
+{"obj": {"type": "LogFloats", "path": ["monitoring", "4968421e", "gpu_memory"], "values": [{"value": 3.7921142578125, "step": null, "ts": 1718638238.6063738}]}, "version": 23, "at": 1718638238.6353524}
+{"obj": {"type": "LogFloats", "path": ["monitoring", "4968421e", "cpu"], "values": [{"value": 38.4, "step": null, "ts": 1718638248.6421726}]}, "version": 24, "at": 1718638248.7471104}
+{"obj": {"type": "LogFloats", "path": ["monitoring", "4968421e", "memory"], "values": [{"value": 16.337295532226562, "step": null, "ts": 1718638248.6421726}]}, "version": 25, "at": 1718638248.8006659}
+{"obj": {"type": "LogFloats", "path": ["monitoring", "4968421e", "gpu_memory"], "values": [{"value": 3.7921142578125, "step": null, "ts": 1718638248.6421726}]}, "version": 26, "at": 1718638248.8488646}
