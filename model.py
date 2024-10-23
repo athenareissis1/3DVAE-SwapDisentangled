@@ -93,13 +93,14 @@ class SpiralDeblock(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, in_channels, out_channels, latent_size, inter_layer_count, inter_layer_size,
+    def __init__(self, in_channels, out_channels, latent_size, age_latent_size, inter_layer_count, inter_layer_size,
                  spiral_indices, down_transform, up_transform, diagonal_idx, 
                  is_vae=False, age_disentanglement=False, swap_feature=False, inter_layer=False):
         super(Model, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.latent_size = latent_size
+        self.age_latent_size = age_latent_size
         self.spiral_indices = spiral_indices
         self.down_transform = down_transform
         self.up_transform = up_transform
@@ -141,13 +142,13 @@ class Model(nn.Module):
 
                 # first branch to get mu and logvar
                 if self.age_disentanglement:
-                    self.mu_logvar.append(nn.Linear(self.inter_layer_size, latent_size-1))
+                    self.mu_logvar.append(nn.Linear(self.inter_layer_size, latent_size-age_latent_size))
                 else:
                     self.mu_logvar.append(nn.Linear(self.inter_layer_size, latent_size))
                 
                 if self.is_vae:
                     if self.age_disentanglement:
-                        self.mu_logvar.append(nn.Linear(self.inter_layer_size, latent_size-1))
+                        self.mu_logvar.append(nn.Linear(self.inter_layer_size, latent_size-age_latent_size))
                     else:
                         self.mu_logvar.append(nn.Linear(self.inter_layer_size, latent_size))
 
@@ -157,7 +158,7 @@ class Model(nn.Module):
 
                 # intermediate layer for mu and logvar (lower dimentional - same size and mu and logvar)
                 if self.age_disentanglement:
-                    self.intermediate = LinearLayer(self.inter_layer_size, latent_size-1)
+                    self.intermediate = LinearLayer(self.inter_layer_size, latent_size-age_latent_size)
                 else:
                     self.intermediate = LinearLayer(self.inter_layer_size, latent_size)
 
@@ -165,26 +166,26 @@ class Model(nn.Module):
 
                 # get mu and logvar from lower dimenational linear layer 
                 if self.age_disentanglement:
-                    self.mu_logvar.append(nn.Linear(latent_size-1, latent_size-1))
+                    self.mu_logvar.append(nn.Linear(latent_size-age_latent_size, latent_size-age_latent_size))
                 else:
                     self.mu_logvar.append(nn.Linear(latent_size, latent_size))
                 
                 if self.is_vae:
                     if self.age_disentanglement:
-                        self.mu_logvar.append(nn.Linear(latent_size-1, latent_size-1))
+                        self.mu_logvar.append(nn.Linear(latent_size-age_latent_size, latent_size-age_latent_size))
                     else:
                         self.mu_logvar.append(nn.Linear(latent_size, latent_size))
             
             # second branch to get age 
             if self.age_disentanglement:
-                self.age = nn.Linear(self.inter_layer_size, 1) 
+                self.age = nn.Linear(self.inter_layer_size, age_latent_size) 
         
         else:
             #  if age_disentanglement is True, age latent is removed from mu layer
             if self.is_vae:  
                 if self.age_disentanglement:
                     self.en_layers.append(
-                        nn.Linear(self.num_vert * out_channels[-1], latent_size-1))
+                        nn.Linear(self.num_vert * out_channels[-1], latent_size-age_latent_size))
                 else:
                     self.en_layers.append(
                         nn.Linear(self.num_vert * out_channels[-1], latent_size))
@@ -306,11 +307,12 @@ class Model(nn.Module):
 
     def forward(self, data):
 
-        x = data.x
+        if hasattr(data, 'x') == True:
+            data = data.x
         
-        mu, logvar = self.encode(x)
+        mu, logvar = self.encode(data)
         if self.is_vae and self.training:
-            z = self._reparameterize(mu, logvar, self.age_disentanglement)
+            z = self._reparameterize(mu, logvar, self.age_latent_size, self.age_disentanglement)
         else:
             z = mu
     
@@ -318,12 +320,15 @@ class Model(nn.Module):
         return out, z, mu, logvar
 
     @staticmethod
-    def _reparameterize(mu, logvar, age_disentanglement=False):
+    def _reparameterize(mu, logvar, age_latent_size, age_disentanglement=False):
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         if age_disentanglement:
-            mu_feat = mu[:,:-1]
-            mu_age = mu[:, -1].view(-1, 1)
+            mu_feat = mu[:,:-age_latent_size]
+            if age_latent_size > 1:
+                mu_age = mu[:, -age_latent_size:]
+            else:
+                mu_age = mu[:, -age_latent_size].view(-1, 1)
             z = mu_feat + eps * std
             z = torch.cat((z, mu_age), dim=1)
         else:

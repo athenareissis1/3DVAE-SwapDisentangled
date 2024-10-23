@@ -4,6 +4,7 @@ import torch.nn
 import trimesh
 import neptune
 import numpy as np
+import math
 
 from torch.nn.functional import cross_entropy
 from torchvision.transforms import ToPILImage
@@ -40,11 +41,14 @@ class ModelManager(torch.nn.Module):
         self._precomputed_storage_path = precomputed_storage_path
         self._normalized_data = configurations['data']['normalize_data']
         self._age_disentanglement = configurations['model']['age_disentanglement']
+        self._age_per_feature = configurations['model']['age_per_feature']
         self._contrastive_loss = configurations['model']['contrastive_loss']
         self._data_type = configurations['data']['dataset_type'].split("_", 1)[1]
         self._inter_layer = configurations['model']['intermediate_layers']
-        self._inter_layer_count = configurations['model']['intermediate_layer_count']
-        self._inter_layer_size = configurations['model']['intermediate_layer_size']
+        self._inter_layer_count = configurations['model']['intermediate_layers_count']
+        self._inter_layer_size = configurations['model']['intermediate_layers_size']
+        self._latent_size = configurations['model']['latent_size']
+        self._age_latent_size = configurations['model']['age_latent_size']
 
         self.to_mm_const = configurations['data']['to_mm_constant']
         self.device = device
@@ -63,7 +67,8 @@ class ModelManager(torch.nn.Module):
 
         self._net = Model(in_channels=self._model_params['in_channels'],
                           out_channels=self._model_params['out_channels'],
-                          latent_size=self._model_params['latent_size'],
+                          latent_size=self._latent_size,
+                          age_latent_size=self._age_latent_size,
                           inter_layer_count=self._inter_layer_count,
                           inter_layer_size=self._inter_layer_size,
                           spiral_indices=spirals_indices,
@@ -81,6 +86,7 @@ class ModelManager(torch.nn.Module):
             weight_decay=self._optimization_params['weight_decay'])
 
         self._losses = None
+        self._w_reconstruction_weight = float(self._optimization_params['reconstruction_weight'])
         self._w_latent_cons_loss = float(self._optimization_params['latent_consistency_weight'])
         self._w_laplacian_loss = float(self._optimization_params['laplacian_weight'])
         self._w_dip_loss = float(self._optimization_params['dip_weight'])
@@ -97,6 +103,8 @@ class ModelManager(torch.nn.Module):
         self.renderer = self._create_renderer()
 
         if self._swap_feature:
+            # self._latent_regions = self._compute_latent_regions(lc_age=False)
+            # self._latent_regions_age = self._compute_latent_regions(lc_age=True)
             self._latent_regions = self._compute_latent_regions()
             self._out_grid_size = self._optimization_params['batch_size']
         else:
@@ -197,10 +205,13 @@ class ModelManager(torch.nn.Module):
         return spiral_indices_list
 
     def _compute_latent_regions(self):
+
         region_names = list(self.template.feat_and_cont.keys())
-        latent_size = self._model_params['latent_size']
-        if self._age_disentanglement:
+        latent_size = self._model_params['latent_size'] # not including age latents 
+
+        if self._model_params['age_disentanglement'] and self._model_params['age_per_feature'] == False:
             latent_size -= self._model_params['age_latent_size']
+
         assert latent_size % len(region_names) == 0
         region_size = latent_size // len(region_names)
         return {k: [i * region_size, (i + 1) * region_size]
@@ -250,12 +261,12 @@ class ModelManager(torch.nn.Module):
             self._optimizer.zero_grad()
 
         data = data.to(device)
-        reconstructed, z, mu, logvar = self.forward(data)
+        reconstructed, z, mu, logvar = self.forward(data.x)
         loss_recon = self.compute_mse_loss(reconstructed, data.x)
         loss_laplacian = self._compute_laplacian_regularizer(reconstructed)
 
         if self._w_kl_loss > 0:
-            loss_kl = self._compute_kl_divergence_loss(mu, logvar, self._age_disentanglement, self._inter_layer)
+            loss_kl = self._compute_kl_divergence_loss(mu, logvar, self._age_disentanglement, self._age_latent_size)
         else:
             loss_kl = torch.tensor(0, device=device)
 
@@ -270,16 +281,20 @@ class ModelManager(torch.nn.Module):
             loss_z_cons = torch.tensor(0, device=device)
 
         if self._age_disentanglement:
-            loss_age = self._compute_age_loss(mu, data.norm_age)
+            if self._swap_feature:
+                swapped = data.swapped
+            else:
+                swapped = None
+            loss_age = self._compute_age_loss(mu, data.norm_age, swapped)
         else:
             loss_age = torch.tensor(0, device=device)
 
         if self._contrastive_loss:
-            loss_contrastive = self._compute_contrastive_loss(mu, data.norm_age)
+            loss_contrastive = self._compute_contrastive_loss(mu, data.norm_age, data.swapped)
         else:
             loss_contrastive = torch.tensor(0, device=device)
 
-        loss_tot = loss_recon + \
+        loss_tot = self._w_reconstruction_weight * loss_recon + \
             self._w_kl_loss * loss_kl + \
             self._w_dip_loss * loss_dip + \
             self._w_latent_cons_loss * loss_z_cons + \
@@ -306,30 +321,41 @@ class ModelManager(torch.nn.Module):
         data = data.to(device)
         batch_size = data.x.size(dim=0)
         half_batch_size = batch_size // 2
-        data = data.x.split(half_batch_size)
-        data1 = data[0]
-        data2 = data[1]
+        data_x = data.x.split(half_batch_size)
+        data_x_1 = data_x[0]
+        data_x_2 = data_x[1]
 
         # Factor VAE Loss
-        reconstructed1, z1, mu1, logvar1 = self._net(data1)
-        loss_recon = self.compute_mse_loss(reconstructed1, data1)
+        reconstructed1, z1, mu1, logvar1 = self._net(data_x_1)
+        loss_recon = self.compute_mse_loss(reconstructed1, data_x_1)
         loss_laplacian = self._compute_laplacian_regularizer(reconstructed1)
 
-        loss_kl = self._compute_kl_divergence_loss(mu1, logvar1)
+        loss_kl = self._compute_kl_divergence_loss(mu1, logvar1, self._age_disentanglement, self._age_latent_size)
+
+        if self._age_disentanglement:
+            norm_age = data.norm_age.split(half_batch_size)[0]
+            if self._swap_feature:
+                swapped = data.swapped.split(half_batch_size)[0]
+            else:
+                swapped = None
+            loss_age = self._compute_age_loss(mu1, norm_age, swapped)
+        else:
+            loss_age = torch.tensor(0, device=device)
 
         disc_z = self._factor_discriminator(z1)
         factor_loss = (disc_z[:, 0] - disc_z[:, 1]).mean()
 
-        loss_tot = loss_recon + \
+        loss_tot = self._w_reconstruction_weight * loss_recon + \
             self._w_kl_loss * loss_kl + \
             self._w_laplacian_loss * loss_laplacian + \
-            self._w_factor_loss * factor_loss
+            self._w_age_loss * loss_age + \
+            self._w_factor_loss * factor_loss 
 
         if train:
             self._optimizer.zero_grad()
             loss_tot.backward(retain_graph=True)
 
-            _, z2, _, _ = self._net(data2)
+            _, z2, _, _ = self._net(data_x_2)
             z2_perm = self._permute_latent_dims(z2).detach()
             disc_z_perm = self._factor_discriminator(z2_perm)
             ones = torch.ones(half_batch_size, dtype=torch.long,
@@ -349,7 +375,10 @@ class ModelManager(torch.nn.Module):
                 'factor': factor_loss.item(),
                 'latent_consistency': 0,
                 'laplacian': loss_laplacian.item(),
+                'age': loss_age.item(),
+                'contrastive': 0,
                 'tot': loss_tot.item()}
+      
 
     @staticmethod
     def _compute_l1_loss(prediction, gt, reduction='mean'):
@@ -368,9 +397,9 @@ class ModelManager(torch.nn.Module):
         return loss.sum() / bs
 
     @staticmethod
-    def _compute_kl_divergence_loss(mu, logvar, age_disentanglement, inter_layer):
+    def _compute_kl_divergence_loss(mu, logvar, age_disentanglement, age_latent_size):
         if age_disentanglement:
-            mu = mu[:,:-1]
+            mu = mu[:,:-age_latent_size]
         kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
         return torch.mean(kl, dim=0)
             
@@ -396,12 +425,33 @@ class ModelManager(torch.nn.Module):
         bs = self._optimization_params['batch_size']
         eta1 = self._optimization_params['latent_consistency_eta1']
         eta2 = self._optimization_params['latent_consistency_eta2']
+        # latent_region = self._latent_regions_age[swapped_feature]
         latent_region = self._latent_regions[swapped_feature]
+
         if self._age_disentanglement:
-            z = z[:, :-1]
+            #  OLD IMPLEMENTATION - do not include the single age latent in LC loss
+            if self._model_params['age_latent_size'] == 1:
+                z = z[:, :-self._age_latent_size]
+            #  NEW IMPLEMENTATION - include all age latents in LC loss
+            else:
+                index_list = []
+                special_index = 45
+
+                for i in range(45):
+                    index_list.append(i)
+                    if (i + 1) % 5 == 0:
+                        index_list.append(special_index)
+                        special_index += 1
+
+                # indexes on new order of latents to have the feature age latents at the end of the feature shape latents
+                index_tensor = torch.tensor(index_list, dtype=torch.long)
+
+                z = z[:, index_tensor]
+
         z_feature = z[:, latent_region[0]:latent_region[1]].view(bs, bs, -1)
         z_else = torch.cat([z[:, :latent_region[0]],
                             z[:, latent_region[1]:]], dim=1).view(bs, bs, -1)
+
         triu_indices = torch.triu_indices(
             z_feature.shape[0], z_feature.shape[0], 1)
 
@@ -428,24 +478,73 @@ class ModelManager(torch.nn.Module):
         return (1 / (bs ** 3 - bs ** 2)) * \
                (torch.sum(torch.max(zero, lr - dr + eta2)) +
                 torch.sum(torch.max(zero, lg - dg + eta1)))
-    
-    def _compute_age_loss(self, age_latent, gt_age):
-        age_latent = age_latent[:, -1]
+
+    def _gt_age(self, bs, age_latents, gt_age, swapped_feature):
 
         if self._swap_feature:
-            age_latent = age_latent[self.batch_diagonal_idx]
+            if self._model_params['age_disentanglement'] and self._model_params['age_per_feature'] == False:
+                latent_per_feature = (self._latent_size - self._age_latent_size) // self._age_latent_size
+            else:
+                latent_per_feature = self._latent_size // self._age_latent_size
+            swapped_latent_index = self._latent_regions[swapped_feature][0] // latent_per_feature
+            # make a gt_age matrix of size [16,9]
+            gt_feature_ages = torch.zeros([bs ** 2, self._age_latent_size],
+                    device=age_latents.device,
+                    dtype=age_latents.dtype)
 
-        gt_age = gt_age.to(dtype=torch.float32).squeeze()
+            # make new gt_age matrix with swapped feature ages
+            for j in range(bs):
+                for i in range(bs):
+                    gt_feature_ages[i * bs + j, ::] = gt_age[i, ::]
+                    if i != j:
+                        gt_feature_ages[i * bs + j, swapped_latent_index] = gt_age[j]
+                
+        else:
+            gt_age = gt_age.repeat(1, 9)
+            gt_feature_ages = torch.zeros([bs, self._age_latent_size],
+                                            device=age_latents.device,
+                                            dtype=age_latents.dtype)
+            for i in range(bs):
+                gt_feature_ages[i, ::] = gt_age[i, ::]
 
-        age_loss = self.compute_mse_loss(age_latent, gt_age)
+        return gt_feature_ages
+
+    
+    def _compute_age_loss(self, mu, gt_age, swapped_feature):
+
+        age_latents = mu[:, -self._age_latent_size:]
+
+        if self._age_per_feature: 
+            assert self._age_latent_size > 1
+            
+            bs = self._optimization_params['batch_size']
+            # bs = mu.shape[0]
+
+            gt_feature_ages = self._gt_age(bs, age_latents, gt_age, swapped_feature)
+            
+            age_loss = self.compute_mse_loss(age_latents, gt_feature_ages)
+
+        else:
+            if self._swap_feature:
+                age_latents = age_latents[self.batch_diagonal_idx]
+
+            gt_age = gt_age.to(dtype=torch.float32).squeeze()
+            age_loss = self.compute_mse_loss(age_latents, gt_age)
 
         return age_loss
     
-    def _compute_contrastive_loss(self, latent, gt_age):
+    def _compute_contrastive_loss(self, latent, gt_age, swapped_feature):
+        assert self._w_contrastive_loss > 0
+        # add in if age_per_feature
+        # if self._swap_feature:
+        #     latent = latent[self.batch_diagonal_idx]
 
-        if self._swap_feature:
-            latent = latent[self.batch_diagonal_idx]
+        age_latents = latent[:, -self._age_latent_size:]
+        bs = self._optimization_params['batch_size']
+        gt_age = self._gt_age(bs, age_latents, gt_age, swapped_feature)
+
         SNN_Loss_Reg = SNNRegLoss(self._optimization_params['contrastive_loss_temp'], self._optimization_params['contrastive_loss_threshold'])
+        # SNN_Loss_Reg = SNNRegLoss(self._optimization_params['contrastive_loss_temp'], self._optimization_params['contrastive_loss_threshold'], self._model_params['age_latent_size'])
         loss_snn_reg = SNN_Loss_Reg(latent, gt_age)
 
         return loss_snn_reg

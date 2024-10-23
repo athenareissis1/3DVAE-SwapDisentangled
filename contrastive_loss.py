@@ -236,8 +236,56 @@ from scipy.spatial.distance import cdist
 #         lsn_loss = -torch.log(self.STABILITY_EPS + (numerator.sum(dim=1) / (self.STABILITY_EPS + (0.5*denominator.sum(dim=1)) + (0.5*denominator1.sum(dim=1))))).mean()
 
 #         return lsn_loss
+
+
+###########################################################
     
-# SNNL loss reg modified fast
+# # SNNL loss reg modified fast
+# class SNNRegLoss(nn.Module):
+#     def __init__(self, T, threshold):
+#         super(SNNRegLoss, self).__init__()
+#         self.T = T
+#         self.STABILITY_EPS = 0.00001
+#         self.threshold = threshold
+
+#     def forward(self, x, y):
+#         # x = all latents
+#         # y = ground truth ages
+#         b = x.size(0)  # Batch size
+#         y = y.squeeze()
+
+#         x_expanded = x[:,-1].unsqueeze(1)  # Target the last dimension
+#         y_expanded = y.unsqueeze(0)
+
+#         # last dimension 
+#         abs_diff_matrix = torch.abs(y_expanded - y_expanded.t())
+#         same_class_mask = abs_diff_matrix <= self.threshold
+
+#         squared_distances = (x_expanded - x_expanded.t()) ** 2
+#         exp_distances = torch.exp(-(squared_distances / self.T))
+#         exp_distances = exp_distances * (1 - torch.eye(b, device='cuda:0'))
+
+#         numerator = exp_distances * same_class_mask
+#         denominator = exp_distances
+
+#         # remaining elements
+#         exp_distances_all = torch.zeros_like(exp_distances, device='cuda:0')
+#         for i in range(x.shape[1]-1):  # Exclude the last dimension
+#             x_expanded = x[:,i].unsqueeze(1)
+#             squared_distances = (x_expanded - x_expanded.t()) ** 2
+#             exp_distances = torch.exp(-(squared_distances / self.T))
+#             exp_distances = exp_distances * (1 - torch.eye(b, device='cuda:0'))
+#             exp_distances = exp_distances * same_class_mask
+#             exp_distances_all = exp_distances_all + exp_distances
+
+#         denominator1 = exp_distances_all/float(x.shape[1]-1)
+
+#         lsn_loss = -torch.log(self.STABILITY_EPS + (numerator.sum(dim=1) / (self.STABILITY_EPS + (0.5*denominator.sum(dim=1)) + (0.5*denominator1.sum(dim=1))))).mean()
+
+#         return lsn_loss
+    
+###########################################################
+
 class SNNRegLoss(nn.Module):
     def __init__(self, T, threshold):
         super(SNNRegLoss, self).__init__()
@@ -249,37 +297,105 @@ class SNNRegLoss(nn.Module):
         # x = all latents
         # y = ground truth ages
         b = x.size(0)  # Batch size
-        y = y.squeeze()
 
-        x_expanded = x[:,-1].unsqueeze(1)  # Target the last dimension
-        y_expanded = y.unsqueeze(0)
+        # Determine the number of age latents
+        num_age_latents = y.size(1) if y.size(1) > 1 else 1
 
-        # last dimension 
-        abs_diff_matrix = torch.abs(y_expanded - y_expanded.t())
+        # Extract the last num_age_latents dimensions from x
+        x_age = x[:, -num_age_latents:]
+
+        # Expand y for broadcasting
+        y_expanded = y.unsqueeze(1)  # Shape: [16, 1, 9]
+        y_transposed = y.unsqueeze(0)  # Shape: [1, 16, 9]
+
+        # Compute absolute differences and same class mask
+        abs_diff_matrix = torch.abs(y_expanded - y_transposed)  # Shape: [16, 16, 9]
         same_class_mask = abs_diff_matrix <= self.threshold
 
-        squared_distances = (x_expanded - x_expanded.t()) ** 2
-        exp_distances = torch.exp(-(squared_distances / self.T))
-        exp_distances = exp_distances * (1 - torch.eye(b, device='cuda:0'))
+        # Compute squared distances and exponential distances
+        squared_distances = (x_age.unsqueeze(1) - x_age.unsqueeze(0)) ** 2
+        exp_distances = torch.exp(-(squared_distances / self.T)) #####
+        exp_distances = exp_distances * (1 - torch.eye(b, device=x.device).unsqueeze(-1)) #####
 
+        # Compute numerator and denominator
         numerator = exp_distances * same_class_mask
         denominator = exp_distances
 
-        # remaining elements
-        exp_distances_all = torch.zeros_like(exp_distances, device='cuda:0')
-        for i in range(x.shape[1]-1):  # Exclude the last dimension
-            x_expanded = x[:,i].unsqueeze(1)
+        # Accumulate distances for remaining elements
+        exp_distances_all = torch.zeros_like(exp_distances, device=x.device)
+        for i in range(x.shape[1] - num_age_latents):  # Exclude the last num_age_latents dimensions
+            x_expanded = x[:, i].unsqueeze(1)
             squared_distances = (x_expanded - x_expanded.t()) ** 2
             exp_distances = torch.exp(-(squared_distances / self.T))
-            exp_distances = exp_distances * (1 - torch.eye(b, device='cuda:0'))
-            exp_distances = exp_distances * same_class_mask
-            exp_distances_all = exp_distances_all + exp_distances
+            exp_distances = exp_distances * (1 - torch.eye(b, device=x.device))
+            exp_distances_all += exp_distances.unsqueeze(-1)
 
-        denominator1 = exp_distances_all/float(x.shape[1]-1)
+        denominator1 = exp_distances_all / float(x.shape[1] - num_age_latents)
 
-        lsn_loss = -torch.log(self.STABILITY_EPS + (numerator.sum(dim=1) / (self.STABILITY_EPS + (0.5*denominator.sum(dim=1)) + (0.5*denominator1.sum(dim=1))))).mean()
+        # Compute final loss
+        lsn_loss = -torch.log(self.STABILITY_EPS + (numerator.sum(dim=1) / (self.STABILITY_EPS + (0.5 * denominator.sum(dim=1)) + (0.5 * denominator1.sum(dim=1))))).mean()
 
         return lsn_loss
+
+###########################################################
+
+# import torch
+# import torch.nn as nn
+
+# class SNNRegLoss(nn.Module):
+#     def __init__(self, T, threshold, num_age_latents):
+#         super(SNNRegLoss, self).__init__()
+#         self.T = T
+#         self.STABILITY_EPS = 0.00001
+#         self.threshold = threshold
+#         self.num_age_latents = num_age_latents
+
+#     def forward(self, x, y):
+#         b = x.size(0)  # Batch size
+#         # y = y.squeeze() 
+
+#         if self.num_age_latents == 1:
+#             x_age = x[:, -1].unsqueeze(1)  # Single age latent
+#             # y = y.unsqueeze(1)  # Expand y for broadcasting
+#         else:
+#             x_age = x[:, -self.num_age_latents:]  # Multiple age latents
+
+#         abs_diff_matrix = torch.abs(y.unsqueeze(1) - y.unsqueeze(0)) # shape [16, 16, 1] or [16, 16, 9]
+#         # abs_diff_matrix = torch.abs(y_expanded - y_expanded.t())
+#         same_class_mask = abs_diff_matrix <= self.threshold
+
+#         squared_distances = (x_age.unsqueeze(1) - x_age.unsqueeze(0)) ** 2 # unsqueeze different dimention to do transpose calculation
+#         exp_distances = torch.exp(-(squared_distances / self.T))
+#         # exp_distances = exp_distances * (1 - torch.eye(b, device=x.device))
+
+#         identity_matrix = torch.eye(b, device=x.device)  # Shape: [b, b]
+#         identity_matrix_unsqueezed = identity_matrix.unsqueeze(-1)  # Shape: [b, b, 1]
+#         identity_matrix_expanded = identity_matrix_unsqueezed.expand(-1, -1, self.num_age_latents)  # Shape: [b, b, num_age_latents]
+#         exp_distances = exp_distances * (1 - identity_matrix_expanded)
+        
+
+#         numerator = exp_distances * same_class_mask
+#         denominator = exp_distances
+
+#         exp_distances_all = torch.zeros_like(exp_distances, device=x.device)
+#         for i in range(x.shape[1] - self.num_age_latents):  # Exclude the age latents
+#             x_expanded = x[:, i].unsqueeze(1)
+#             squared_distances = (x_expanded - x_expanded.t()) ** 2
+#             exp_distances = torch.exp(-(squared_distances / self.T))
+#             # exp_distances = exp_distances * (1 - torch.eye(b, device=x.device))
+#             exp_distances = exp_distances.unsqueeze(-1).expand(-1, -1, self.num_age_latents)
+#             exp_distances = exp_distances * same_class_mask
+#             exp_distances_all = exp_distances_all + exp_distances
+
+#         denominator1 = exp_distances_all / float(x.shape[1] - self.num_age_latents)
+
+#         lsn_loss = -torch.log(self.STABILITY_EPS + (numerator.sum(dim=1) / (self.STABILITY_EPS + (0.5 * denominator.sum(dim=1)) + (0.5 * denominator1.sum(dim=1))))).mean()
+
+#         return lsn_loss
+
+
+
+###########################################################
 
 
 # # Wasserstein loss proposed by nilanjan

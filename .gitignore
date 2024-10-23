@@ -30,3 +30,5 @@ precomputed_cvpr/
 preprocessing_data/
 
 logging.yaml
+
+.neptune/

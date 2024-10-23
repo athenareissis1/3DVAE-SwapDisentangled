@@ -19,6 +19,7 @@ optimization:
   lr: 1e-4
   weight_decay: 0
 
+  reconstruction_weight: 1
   laplacian_weight: 5   
   kl_weight: 5e-4                                                               # if 0, AE or RAE architecture is used                                  
 
@@ -58,13 +59,14 @@ model:
   in_channels: 3                                                                # number of input vertex features. Most likely 3 (x, y, z)
   out_channels: [32, 32, 32, 64]                                                # channels of intermediate layers
   latent_size: 45                                                               # size of the latent vector
-  age_latent_size: 1                                                            # size of additional age latents
+  age_per_feature: True                                                        # if True, a single age latent is added per feature. 
+  age_latent_size: 9                                                          # size of additional age latents
   pre_z_sigmoid: False
   contrastive_loss: True                                                        # if True, contrastive loss is used
   age_disentanglement: True                                                     # if True, an extra feature is added to the latent vector that represents age & age related losses are added
-  intermediate_layers: True                                                    # if True, intermediate layers are used
+  intermediate_layers: False                                                    # if True, intermediate layers are used
   intermediate_layers_count: 2                                                 # number of intermediate layers
-  intermediate_layer_size: 120                                                 # size of the intermediate layers
+  intermediate_layers_size: 120                                                 # size of the intermediate layers
 
 logging_frequency:
   tb_renderings: 50
