@@ -164,9 +164,10 @@ class MeshDataset(Dataset):
         self._template = template
 
         self._data_type = root['dataset_type'].split("_", 1)[1]
+        self._dataset_age_range = root['dataset_age_range']
 
         self._train_names, self._test_names, self._val_names = self.split_data(
-            os.path.join(precomputed_storage_path, f'data_split_{self._data_type}.json'))
+            os.path.join(precomputed_storage_path, f'data_split_{self._data_type}_{self._dataset_age_range}.json'))
 
         self._processed_files = [f + '.pt' for f in self.raw_file_names]
 
@@ -358,7 +359,6 @@ class MeshInMemoryDataset(InMemoryDataset):
         for dirpath, _, fnames in os.walk(self._root):
             for f in fnames:
                 if f.endswith('.obj'):
-                    # files.append(f[:-4])
                     files.append(f)
         return files
     
@@ -367,9 +367,10 @@ class MeshInMemoryDataset(InMemoryDataset):
             file_id = fname.replace("_", "").split('.', 1)[0]
         else:
             file_id = fname.split("_")[0].lstrip('0') 
-        
-        # file_id = torch.tensor(int(file_id))
 
+        if 'combined' in str(self._config_data['dataset_type']):
+            file_id = int(file_id)
+        
         return file_id 
 
     def split_data(self, data_split_list_path):
@@ -382,16 +383,22 @@ class MeshInMemoryDataset(InMemoryDataset):
         except FileNotFoundError:
             all_file_names = self.find_filenames()
             all_file_names.sort()
+            all_file_names_copy = all_file_names.copy()
+
+            min_age, max_age = self._config_data['dataset_age_range'].split('-')
 
             if self._config['model']['age_disentanglement']:
                 # using train_test_split from sklearn
                 age_metadata = pd.read_csv(self._config_data['dataset_metadata_path'], usecols=['id', 'AgeYears'])
                 all_ages = []
-                for i, fname in enumerate(all_file_names):
+                for i, fname in enumerate(all_file_names_copy):
                     file_id = self.file_id(fname)
                     if file_id in age_metadata['id'].values:
                         age = age_metadata.loc[age_metadata['id'] == file_id, 'AgeYears'].values[0]
-                        all_ages.append(age)
+                        if age >= int(min_age) and age <= int(max_age):
+                            all_ages.append(age)
+                        else:
+                            all_file_names.remove(fname)
                     else:
                         all_file_names.remove(fname)
 
@@ -485,9 +492,7 @@ class MeshInMemoryDataset(InMemoryDataset):
             os.path.join(self._precomputed_storage_path, 'mean.obj'))
     
     def age_data(self, fname):
-        # file_id = np.int64(self.file_id(fname))
         file_id = self.file_id(fname)
-        # age = self._age_metadata.loc[self._age_metadata['id'] == file_id, 'age'].values[0]
         if file_id in self._age_metadata['id'].values:
             age = self._age_metadata.loc[self._age_metadata['id'] == file_id, 'age'].values[0]
             norm_age = self._age_metadata.loc[self._age_metadata['id'] == file_id, 'norm_age'].values[0]
@@ -506,20 +511,17 @@ class MeshInMemoryDataset(InMemoryDataset):
         storage_path = os.path.join(self._precomputed_storage_path, f'normalise_age_{self._data_type}.pkl')
 
         for i in range(len(self._train_names)):
-            # train_id.append(np.int64(self.file_id(self._train_names[i])))
             train_id.append(self.file_id(self._train_names[i]))
         for i in range(len(self._val_names)):
-            # val_id.append(np.int64(self.file_id(self._val_names[i])))
             val_id.append(self.file_id(self._val_names[i]))
         for i in range(len(self._test_names)):
-            # test_id.append(np.int64(self.file_id(self._test_names[i])))
             test_id.append(self.file_id(self._test_names[i]))
         
         try:
             with open(storage_path, 'rb') as file:
                 age_train_mean, age_train_std = \
                     pickle.load(file)
-        except FileNotFoundError:
+        except (FileNotFoundError, EOFError, pickle.UnpicklingError):
             print("Computing mean and std on the ages of the training data")
             if not os.path.isdir(self._precomputed_storage_path):
                 os.mkdir(self._precomputed_storage_path)

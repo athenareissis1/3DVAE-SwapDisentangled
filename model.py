@@ -36,6 +36,7 @@ class SpiralConv(nn.Module):
             raise RuntimeError(
                 'x.dim() is expected to be 2 or 3, but received {}'.format(
                     x.dim()))
+
         x = self.layer(x)
         return x
 
@@ -334,6 +335,92 @@ class Model(nn.Module):
         else:
             z = mu + eps * std
         return z
+
+# adversarial loss for age disentanglement
+class AgeVAEDiscriminator(nn.Module):
+    def __init__(self, discriminator_type, input_dim, in_channels, out_channels, spiral_indices, down_transform):
+        self.discriminator_type = discriminator_type
+        if discriminator_type == "MLP":
+            super(AgeVAEDiscriminator, self).__init__()
+            self.model = nn.Sequential(
+            nn.Linear(input_dim, 512),
+            nn.LeakyReLU(0.2),
+            nn.Linear(512, 256),
+            nn.LeakyReLU(0.2),
+            nn.Linear(256, 1),
+            nn.Sigmoid())
+        else:
+            super(AgeVAEDiscriminator, self).__init__()
+            self.dis_layers = nn.ModuleList()
+            self.spiral_indices = spiral_indices
+            self.down_tranform = down_transform
+            self.num_vert = down_transform[-1].size(0)
+
+            for idx in range(len(out_channels)):
+                if idx == 0:
+                    self.dis_layers.append(
+                        SpiralEnblock(in_channels, out_channels[idx],
+                                    self.spiral_indices[idx]))
+                else:
+                    self.dis_layers.append(
+                        SpiralEnblock(out_channels[idx - 1], out_channels[idx],
+                                    self.spiral_indices[idx]))
+                    
+            self.dis_layers.append(
+                nn.Linear(self.num_vert * out_channels[-1], 1))
+    
+    def forward(self, x):
+        if self.discriminator_type == "MLP":
+            return self.model(x)
+        else: 
+            for layer in self.dis_layers:
+                layer.to(x.device)
+
+            for i, layer in enumerate(self.dis_layers):
+                if i < len(self.dis_layers) - 1:
+                    x = layer(x, self.down_tranform[i])
+
+            x = x.view(-1, self.dis_layers[-1].weight.size(1))
+            output = self.dis_layers[-1](x)
+            output = torch.sigmoid(output)
+
+            return output
+
+##### SAME AS ENCODER ARCHECTURE BUT WITH A LINEAR LAYER AT THE END TO GET A SINGLE OUTPUT #####
+
+    # def __init__(self, in_channels, out_channels, spiral_indices, down_transform):
+    #     super(AgeVAEDiscriminator, self).__init__()
+    #     self.dis_layers = nn.ModuleList()
+    #     self.spiral_indices = spiral_indices
+    #     self.down_tranform = down_transform
+    #     self.num_vert = down_transform[-1].size(0)
+
+    #     for idx in range(len(out_channels)):
+    #         if idx == 0:
+    #             self.dis_layers.append(
+    #                 SpiralEnblock(in_channels, out_channels[idx],
+    #                               self.spiral_indices[idx]))
+    #         else:
+    #             self.dis_layers.append(
+    #                 SpiralEnblock(out_channels[idx - 1], out_channels[idx],
+    #                               self.spiral_indices[idx]))
+                
+    #     self.dis_layers.append(
+    #         nn.Linear(self.num_vert * out_channels[-1], 1))
+        
+    # def forward(self, x):
+    #     for layer in self.dis_layers:
+    #         layer.to(x.device)
+
+    #     for i, layer in enumerate(self.dis_layers):
+    #         if i < len(self.dis_layers) - 1:
+    #             x = layer(x, self.down_tranform[i])
+
+    #     x = x.view(-1, self.dis_layers[-1].weight.size(1))
+    #     output = self.dis_layers[-1](x)
+    #     output = torch.sigmoid(output)
+
+    #     return output
 
 
 class FactorVAEDiscriminator(nn.Module):
